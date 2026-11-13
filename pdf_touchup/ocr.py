@@ -25,3 +25,12 @@ def ocr_words(page: pymupdf.Page, dpi: int = OCR_DPI) -> list[Word]:
         os.environ["PATH"] = f"{exe_dir}{os.pathsep}{os.environ.get('PATH', '')}"
     tp = page.get_textpage_ocr(dpi=dpi, full=True, language="eng", tessdata=str(tessdata))
     return words_from_tuples(page, page.get_text("words", textpage=tp))
+
+
+def run_ocr_job(path: str, password: str | None, page_index: int, ocr=None) -> list[Word]:
+    """Entry point for the background OCR process. It opens its own copy of the file,
+    because PyMuPDF objects must never be shared between threads or processes."""
+    from .document import open_document
+
+    doc = open_document(path, password)
+    return (ocr or ocr_words)(doc[page_index])

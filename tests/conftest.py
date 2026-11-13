@@ -1,4 +1,6 @@
 """Generated fixture PDFs: native, scanned, searchable scan, rotated, encrypted, multipage."""
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from pathlib import Path
 
 import numpy as np

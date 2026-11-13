@@ -46,3 +46,14 @@ def test_cache_uses_text_layer_for_searchable_scan(searchable_scan_pdf):
     got = PageTextCache(pymupdf.open(searchable_scan_pdf), ocr=fake_ocr).get(0)
     assert got.kind == "searchable_scan"
     assert "Kwame" in [w.text for w in got.words]
+
+
+def test_cache_put_and_has(scanned_pdf):
+    from pdf_touchup.model import PageText
+    from pdf_touchup.text_source import PageTextCache
+
+    cache = PageTextCache(pymupdf.open(scanned_pdf), ocr=lambda p: 1 / 0)
+    assert not cache.has(0)
+    pt = PageText(0, "scanned", [])
+    cache.put(pt)
+    assert cache.has(0) and cache.get(0) is pt

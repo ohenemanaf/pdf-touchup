@@ -38,3 +38,10 @@ class PageTextCache:
             words = self._ocr(page) if kind == "scanned" else native_words(page)
             self._pages[page_index] = PageText(page_index, kind, words)
         return self._pages[page_index]
+
+    def has(self, page_index: int) -> bool:
+        return page_index in self._pages
+
+    def put(self, page_text: PageText) -> None:
+        """Store words computed elsewhere (e.g. by the background OCR process)."""
+        self._pages[page_text.page_index] = page_text
