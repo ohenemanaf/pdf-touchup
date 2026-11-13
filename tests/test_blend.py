@@ -47,3 +47,4 @@ def test_width_scale_clamps():
     s = width_scale("Mensah", "Asante", font, 11, old_w)
     assert 0.90 <= s <= 1.10
     assert width_scale("Mensah", "Mmmmmm", font, 11, old_w) == 0.90
+

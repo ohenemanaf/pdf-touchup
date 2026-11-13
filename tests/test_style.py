@@ -60,7 +60,7 @@ def _ocr_name_rect(page):
 def test_scanned_style(scanned_pdf):
     page = pymupdf.open(scanned_pdf)[0]
     s = detect_style(page, _ocr_name_rect(page), "Kwame Mensah", "Kwame Asante", "scanned")
-    assert abs(s.size - 11.0) <= 1.0, s.size
+    assert abs(s.size - 11.0) <= 0.4, s.size
     assert s.family == "serif"
     assert _near(s.background, CREAM, 0.03)
     assert _near(s.color, INK, 0.08)
