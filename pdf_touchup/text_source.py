@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pymupdf
 
-from .model import Word
+from .document import page_kind
+from .model import PageText, Word
 
 
 def to_display(page: pymupdf.Page, rect) -> tuple[float, float, float, float]:
@@ -18,3 +19,22 @@ def words_from_tuples(page: pymupdf.Page, raw) -> list[Word]:
 
 def native_words(page: pymupdf.Page) -> list[Word]:
     return words_from_tuples(page, page.get_text("words"))
+
+
+class PageTextCache:
+    """Words per page, computed the first time a page is asked for (OCR only for scans)."""
+
+    def __init__(self, doc: pymupdf.Document, ocr=None):
+        if ocr is None:
+            from .ocr import ocr_words as ocr
+        self._doc = doc
+        self._ocr = ocr
+        self._pages: dict[int, PageText] = {}
+
+    def get(self, page_index: int) -> PageText:
+        if page_index not in self._pages:
+            page = self._doc[page_index]
+            kind = page_kind(page)
+            words = self._ocr(page) if kind == "scanned" else native_words(page)
+            self._pages[page_index] = PageText(page_index, kind, words)
+        return self._pages[page_index]

@@ -19,3 +19,30 @@ def test_native_words_in_display_space(native_pdf):
     expected = pymupdf.Rect(raw[:4]) * page.rotation_matrix
     assert pymupdf.Rect(kwame.rect) == expected
     assert page.rect.contains(pymupdf.Rect(kwame.rect))
+
+
+def test_cache_is_lazy_and_memoised(multipage_scan_pdf):
+    from pdf_touchup.text_source import PageTextCache
+
+    seen = []
+
+    def fake_ocr(page):
+        seen.append(page.number)
+        return []
+
+    cache = PageTextCache(pymupdf.open(multipage_scan_pdf), ocr=fake_ocr)
+    first = cache.get(2)
+    assert cache.get(2) is first
+    assert seen == [2]
+    assert first.kind == "scanned"
+
+
+def test_cache_uses_text_layer_for_searchable_scan(searchable_scan_pdf):
+    from pdf_touchup.text_source import PageTextCache
+
+    def fake_ocr(page):
+        raise AssertionError("OCR must not run on a page that already has a text layer")
+
+    got = PageTextCache(pymupdf.open(searchable_scan_pdf), ocr=fake_ocr).get(0)
+    assert got.kind == "searchable_scan"
+    assert "Kwame" in [w.text for w in got.words]
