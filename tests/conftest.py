@@ -11,13 +11,14 @@ INK = (40, 40, 60)
 LINES = [((72, 100), "Name: Kwame Mensah"), ((72, 120), "Date: 12 March 2024")]
 
 
-def make_native(path: Path, family: str = "Serif") -> Path:
+def make_native(path: Path, family: str = "Serif", subset: bool = True) -> Path:
     doc = pymupdf.open()
     page = doc.new_page(width=595, height=842)
     for pos, text in LINES:
         page.insert_text(pos, text, fontsize=11, fontname="F0",
                          fontfile=str(FONTS / f"Liberation{family}-Regular.ttf"))
-    doc.subset_fonts()
+    if subset:
+        doc.subset_fonts()
     doc.save(path)
     return path
 
@@ -56,6 +57,11 @@ def make_scanned(path: Path, native: Path, pages: int = 1, invisible_text: bool 
 @pytest.fixture
 def native_pdf(tmp_path):
     return make_native(tmp_path / "native.pdf")
+
+
+@pytest.fixture
+def native_fullfont_pdf(tmp_path):
+    return make_native(tmp_path / "native_full.pdf", subset=False)
 
 
 @pytest.fixture

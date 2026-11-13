@@ -12,6 +12,7 @@ from .model import RGB
 
 DESCENDERS = set("gjpqy")
 TALL = set("bdfhklt")
+INK_QUANTILE = 0.1  # darkest share of pixels treated as ink
 SCALE_MIN, SCALE_MAX = 0.90, 1.10
 LENGTH_RATIO_MIN, LENGTH_RATIO_MAX = 0.8, 1.25
 
@@ -44,7 +45,7 @@ def ink_color(img: np.ndarray, box, background: RGB) -> RGB:
     x0, y0, x1, y1 = _clip(img, box)
     pixels = img[y0:y1, x0:x1].reshape(-1, 3).astype(float)
     lum = _lum(pixels) / 255
-    candidates = pixels[(lum <= np.quantile(lum, 0.2)) & (_lum(background) - lum > 0.15)]
+    candidates = pixels[(lum <= np.quantile(lum, INK_QUANTILE)) & (_lum(background) - lum > 0.15)]
     if len(candidates) == 0:
         return (0.0, 0.0, 0.0)
     return _rgb(candidates)
