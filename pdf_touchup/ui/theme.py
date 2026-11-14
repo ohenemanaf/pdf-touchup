@@ -106,6 +106,7 @@ QScrollBar::handle:vertical { background: $input_border; border-radius: 4px; min
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
 QScrollBar::handle:horizontal { background: $input_border; border-radius: 4px; min-width: 30px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 /* edit popover */
 QFrame#editPopover { background: $surface; border: 1px solid $input_border; border-radius: 12px; }

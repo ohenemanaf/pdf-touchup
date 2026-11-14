@@ -321,3 +321,68 @@ def test_drop_non_pdf_shows_message(window, tmp_path, native_pdf, monkeypatch):
     _drop(window, [native_pdf, native_pdf])
     assert window.doc is None
     assert len(shown) == 2 and all("one PDF" in m for m in shown)
+
+
+# ---- fixes panel and thumbnail badges --------------------------------------------------
+
+def _apply_on(qtbot, window, words, new_text):
+    _click_word(qtbot, window.view, words[0])
+    for w in words[1:]:
+        _click_word(qtbot, window.view, w, Qt.ShiftModifier)
+    qtbot.waitUntil(lambda: window.popover.isVisible())
+    window.popover.new_text.setText(new_text)
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+
+
+def test_fixes_panel_lists_fixes(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    panel = window.fixes_panel
+    assert panel.cards == [] and panel.empty_state.isVisibleTo(panel)
+    _apply_on(qtbot, window, ["Kwame", "Mensah"], "Kwame Asante")
+    assert len(panel.cards) == 1
+    card = panel.cards[0]
+    assert card.old_label.text() == "Kwame Mensah" and card.new_label.text() == "Kwame Asante"
+    assert "Page 1" in card.meta_label.text()
+    assert not panel.empty_state.isVisibleTo(panel)
+    assert "1" in panel.heading.text()
+
+
+def test_panel_undo_removes_one_fix_and_ctrl_z_restores(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["Kwame", "Mensah"], "Kwame Asante")
+    _apply_on(qtbot, window, ["March"], "April")
+    assert len(window.fixes_panel.cards) == 2
+    first = next(c for c in window.fixes_panel.cards if c.edit.new_text == "Kwame Asante")
+    qtbot.mouseClick(first.undo_button, Qt.LeftButton)
+    assert [e.new_text for e in window.edits.items()] == ["April"]
+    assert len(window.fixes_panel.cards) == 1
+    window.undo_action.trigger()
+    assert sorted(e.new_text for e in window.edits.items()) == ["April", "Kwame Asante"]
+
+
+def _two_page_native(tmp_path):
+    import pymupdf
+    from conftest import FONTS
+
+    path = tmp_path / "two.pdf"
+    doc = pymupdf.open()
+    for text in ("First page text here", "Second page Mensah"):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), text, fontsize=11, fontname="F0",
+                         fontfile=str(FONTS / "LiberationSerif-Regular.ttf"))
+    doc.save(path)
+    return path
+
+
+def test_panel_click_jumps_to_page_and_thumbnail_badges(qtbot, window, tmp_path):
+    window.open_path(_two_page_native(tmp_path))
+    window.go_to_page(1)
+    _apply_on(qtbot, window, ["Mensah"], "Asante")
+    window.go_to_page(0)
+    card = window.fixes_panel.cards[0]
+    qtbot.mouseClick(card, Qt.LeftButton)
+    assert window.page_index == 1
+    qtbot.waitUntil(window.thumbnails_done)
+    assert window.thumb_badge(1) == 1 and window.thumb_badge(0) == 0
+    qtbot.mouseClick(card.undo_button, Qt.LeftButton)
+    assert window.thumb_badge(1) == 0

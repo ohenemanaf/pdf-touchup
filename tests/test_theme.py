@@ -37,3 +37,20 @@ def test_dark_theme_keeps_page_untinted(qtbot, settings, native_pdf):
         w.close()
     finally:
         apply_theme(QApplication.instance(), "light")
+
+
+def test_theme_switch_recolours_page_background(qtbot, settings, native_pdf):
+    from pdf_touchup.ui.app import MainWindow
+
+    app = QApplication.instance()
+    apply_theme(app, "light")
+    w = MainWindow(settings=settings)
+    try:
+        w.show()
+        assert w.view.backgroundBrush().color().name() == PALETTES["light"]["canvas"]
+        w.toggle_theme()
+        assert w.view.backgroundBrush().color().name() == PALETTES["dark"]["canvas"]
+        assert saved_theme(settings) == "dark"
+    finally:
+        apply_theme(app, "light")
+        w.close()

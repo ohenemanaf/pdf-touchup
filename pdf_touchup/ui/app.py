@@ -9,8 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QObject, QRectF, QSettings, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QPushButton, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -23,6 +23,7 @@ from ..selection import SelectionError, display_words, merge_selection
 from ..style import detect_style
 from ..text_source import PageTextCache
 from .edit_popover import EditPopover
+from .fixes_panel import FixesPanel
 from .recent import RecentFiles
 from .start_page import StartPage, app_mark
 from .theme import PALETTES, apply_theme, current_theme, icon, save_theme, saved_theme
@@ -32,6 +33,7 @@ APP_NAME = "PDF Touch-up"
 SCREEN_PX_PER_PT = 96 / 72
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 50, 300, 25
 THUMB_SCALE = 0.18
+BADGE_ROLE = Qt.UserRole + 1  # number of fixes on a page, drawn as a badge on its thumbnail
 THUMB_BATCH = 3  # thumbnails rendered per event-loop turn, so long files open instantly
 
 STATUS_NATIVE = "Normal page"
@@ -103,6 +105,11 @@ class MainWindow(QMainWindow):
         self.editor_body.setSpacing(0)
         self.editor_body.addWidget(self.thumbs)
         self.editor_body.addWidget(self.view, 1)
+        self.fixes_panel = FixesPanel(self)
+        self.fixes_panel.jump_requested.connect(self._jump_to_fix)
+        self.fixes_panel.remove_requested.connect(self._remove_fix)
+        self.editor_body.addWidget(self.fixes_panel)
+        self._thumb_base: dict[int, QPixmap] = {}
         editor.addLayout(self.editor_body, 1)
 
         self.start_page = StartPage(self)
@@ -218,6 +225,7 @@ class MainWindow(QMainWindow):
                              (self.redo_button, "redo"), (self.zoom_out, "minus"), (self.zoom_in, "plus")):
             button.setIcon(icon(name, colour))
         self.theme_button.setIcon(icon("moon" if self._theme() == "light" else "sun", colour))
+        self.view.setBackgroundBrush(QColor(palette["canvas"]))
         self.start_page.set_drop_icon(icon("upload", palette["accent"], 28))
         self.start_page.set_file_icon(icon("file", muted, 16))
 
@@ -286,8 +294,66 @@ class MainWindow(QMainWindow):
 
     def _on_edits_changed(self) -> None:
         self._refresh_actions()
+        self.fixes_panel.set_fixes(self.edits.items())
         if self.doc is not None:
             self._refresh_page()
+            self._update_badges()
+
+    # ---- fixes panel and thumbnail badges -------------------------------------------
+    def _jump_to_fix(self, edit: Edit) -> None:
+        if edit.page_index != self.page_index:
+            self.go_to_page(edit.page_index)
+        x0, y0, x1, y1 = edit.rect
+        s = self.view.scale_factor
+        self.view.centerOn((x0 + x1) / 2 * s, (y0 + y1) / 2 * s)
+        self.view.flash_rect(QRectF(x0 * s, y0 * s, (x1 - x0) * s, (y1 - y0) * s))
+
+    def _remove_fix(self, edit: Edit) -> None:
+        self.popover.hide()
+        self.edits.remove(edit)
+
+    def _fix_counts(self) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for e in self.edits.items():
+            counts[e.page_index] = counts.get(e.page_index, 0) + 1
+        return counts
+
+    def thumb_badge(self, index: int) -> int:
+        item = self.thumbs.item(index)
+        return int(item.data(BADGE_ROLE) or 0) if item is not None else 0
+
+    def _set_thumb_icon(self, index: int, count: int) -> None:
+        item = self.thumbs.item(index)
+        if item is None:
+            return
+        item.setData(BADGE_ROLE, count)
+        base = self._thumb_base.get(index)
+        if base is None:
+            return
+        pm = base.copy()
+        if count:
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.Antialiasing)
+            r = 9
+            cx, cy = pm.width() - r - 3, r + 3
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(PALETTES["light"]["accent"]))
+            painter.drawEllipse(QPointF(cx, cy), r, r)
+            painter.setPen(QColor("#ffffff"))
+            font = painter.font()
+            font.setPixelSize(11)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(QRectF(cx - r, cy - r, 2 * r, 2 * r), Qt.AlignCenter, str(count))
+            painter.end()
+        icon_ = QIcon(pm)
+        icon_.addPixmap(pm, QIcon.Selected)  # no blue tint over the selected page
+        item.setIcon(icon_)
+
+    def _update_badges(self) -> None:
+        counts = self._fix_counts()
+        for i in range(self.thumbs.count()):
+            self._set_thumb_icon(i, counts.get(i, 0))
 
     # ---- opening ------------------------------------------------------------------
     def _choose_file(self) -> None:
@@ -330,6 +396,7 @@ class MainWindow(QMainWindow):
         self.file_meta.setText(f"· {kind} · {pages} page{'s' if pages != 1 else ''}")
         self.stack.setCurrentWidget(self.editor_page)
         self.statusBar().show()
+        self.fixes_panel.set_fixes([])
         self._fill_thumbs()
         self.go_to_page(0)
         self._refresh_actions()
@@ -345,6 +412,7 @@ class MainWindow(QMainWindow):
         """Placeholders first; real thumbnails are drawn a few at a time so the window
         never stalls on long scans."""
         self._thumb_timer.stop()
+        self._thumb_base = {}
         self.thumbs.blockSignals(True)
         self.thumbs.clear()
         for i, page in enumerate(self.doc):
@@ -361,10 +429,8 @@ class MainWindow(QMainWindow):
         end = min(self._thumb_next + THUMB_BATCH, self.doc.page_count if self.doc else 0)
         for i in range(self._thumb_next, end):
             pix = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(THUMB_SCALE, THUMB_SCALE), alpha=False)
-            pm = to_qpixmap(pix)
-            icon = QIcon(pm)
-            icon.addPixmap(pm, QIcon.Selected)  # no blue tint over the selected page
-            self.thumbs.item(i).setIcon(icon)
+            self._thumb_base[i] = to_qpixmap(pix)
+            self._set_thumb_icon(i, self._fix_counts().get(i, 0))
         self._thumb_next = end
         if self.doc is None or end >= self.doc.page_count:
             self._thumb_timer.stop()
