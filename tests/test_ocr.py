@@ -39,3 +39,14 @@ def test_ocr_unavailable_raises(scanned_pdf, monkeypatch):
     monkeypatch.setattr(ocr, "tesseract_paths", lambda: None)
     with pytest.raises(OcrUnavailable):
         ocr_words(pymupdf.open(scanned_pdf)[0])
+
+
+def test_bundled_ocr_data_found_without_tesseract_install(monkeypatch):
+    import pdf_touchup.resources as res
+
+    monkeypatch.delenv("PDF_TOUCHUP_TESSERACT", raising=False)
+    monkeypatch.setattr(res.shutil, "which", lambda name: None)
+    monkeypatch.setattr(res, "_DEFAULT_WINDOWS", res.Path("Z:/no-tesseract-here"))
+    found = res.tesseract_paths()
+    assert found is not None
+    assert found[1] == res.resource_dir() / "tessdata"

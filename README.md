@@ -38,7 +38,6 @@ Undo and redo work until you save (Ctrl+Z / Ctrl+Y).
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\activate
-winget install UB-Mannheim.TesseractOCR   # OCR language data for development
 pip install -e .[dev]
 pytest
 python -m pdf_touchup                     # run the app
@@ -47,7 +46,6 @@ python -m pdf_touchup                     # run the app
 Building the installer locally:
 
 ```powershell
-./packaging/fetch_tessdata.ps1
 pyinstaller packaging/pdf_touchup.spec --noconfirm --distpath dist --workpath build/pyi
 iscc /DAppVersion=0.1.0 packaging\installer.iss
 ```
@@ -58,4 +56,4 @@ Pushing a tag such as `v0.1.0` makes GitHub Actions build the installer and publ
 
 AGPL-3.0 (see `LICENSE`), because the app uses [PyMuPDF](https://pymupdf.readthedocs.io).
 Bundled fonts: [Liberation Fonts](https://github.com/liberationfonts/liberation-fonts) (SIL OFL, `pdf_touchup/fonts/OFL.txt`).
-OCR language data: [Tesseract](https://github.com/tesseract-ocr/tessdata) (Apache-2.0).
+OCR language data: [Tesseract](https://github.com/tesseract-ocr/tessdata) (Apache-2.0, `pdf_touchup/tessdata/`).
