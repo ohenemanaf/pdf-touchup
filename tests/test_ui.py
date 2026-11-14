@@ -18,11 +18,12 @@ def slow_fake_ocr(page):
 @pytest.fixture
 def window(qtbot):
     w = MainWindow()
-    qtbot.addWidget(w)
     w.resize(1000, 800)
     w.show()
     yield w
-    w.shutdown()
+    # Closed here rather than by qtbot, so the "save first?" prompt can be skipped.
+    w._saved_count = len(w.edits.items())
+    w.close()
 
 
 def _click_word(qtbot, view, text, modifier=Qt.NoModifier):
@@ -78,3 +79,99 @@ def test_password_cancel_keeps_window_empty(window, encrypted_pdf, monkeypatch):
     monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("", False))
     window.open_path(encrypted_pdf)
     assert window.doc is None
+
+
+# ---- Task 8: edit popover and save flow ------------------------------------------
+
+def _select_name(qtbot, window):
+    _click_word(qtbot, window.view, "Kwame")
+    _click_word(qtbot, window.view, "Mensah", Qt.ShiftModifier)
+    qtbot.waitUntil(lambda: window.popover.isVisible())
+
+
+def _image(window):
+    return window.view.current_pixmap().toImage()
+
+
+def test_popover_prefills_selection(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _select_name(qtbot, window)
+    assert window.popover.old_text.text() == "Kwame Mensah"
+    assert window.popover.new_text.text() == "Kwame Mensah"
+    assert window.popover.family.currentData() == "serif"
+    assert abs(window.popover.size.value() - 11.0) < 0.01
+
+
+def test_apply_flow_native(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    original = _image(window)
+    _select_name(qtbot, window)
+    window.popover.new_text.setText("Kwame Asante")
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+    assert len(window.edits.items()) == 1
+    assert window.edits.items()[0].new_text == "Kwame Asante"
+    assert "*" in window.windowTitle()
+    assert not window.popover.isVisible()
+    assert _image(window) != original
+    window.undo_action.trigger()
+    assert len(window.edits.items()) == 0
+    assert _image(window) == original
+
+
+def test_preview_updates_before_apply(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    original = _image(window)
+    _select_name(qtbot, window)
+    window.popover.new_text.setText("Kwame Asante")
+    qtbot.waitUntil(lambda: _image(window) != original, timeout=2000)
+    qtbot.mouseClick(window.popover.cancel_button, Qt.LeftButton)
+    assert _image(window) == original
+    assert window.edits.items() == []
+
+
+def test_apply_disabled_for_missing_glyph(qtbot, window, native_pdf):
+    from test_fonts import _absent_char
+
+    window.open_path(native_pdf)
+    _select_name(qtbot, window)
+    c = _absent_char()
+    window.popover.new_text.setText(f"Kwame {c}")
+    assert not window.popover.apply_button.isEnabled()
+    assert window.popover.warning.isVisible()
+    assert c in window.popover.warning.text()
+    window.popover.new_text.setText("")
+    assert not window.popover.apply_button.isEnabled()
+
+
+def test_save_as_flow(qtbot, window, native_pdf, tmp_path, monkeypatch):
+    import pymupdf
+    from PySide6.QtWidgets import QFileDialog
+
+    out = tmp_path / "out.pdf"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    source_bytes = native_pdf.read_bytes()
+    window.open_path(native_pdf)
+    _select_name(qtbot, window)
+    window.popover.new_text.setText("Kwame Asante")
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+    window.save_action.trigger()
+    assert "Asante" in pymupdf.open(out)[0].get_text()
+    assert "*" not in window.windowTitle()
+    assert native_pdf.read_bytes() == source_bytes
+
+
+def test_save_as_rejects_source_path(qtbot, window, native_pdf, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    warnings = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(native_pdf), ""))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    source_bytes = native_pdf.read_bytes()
+    window.open_path(native_pdf)
+    _select_name(qtbot, window)
+    window.popover.new_text.setText("Kwame Asante")
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+    window.save_action.trigger()
+    assert warnings and "original" in warnings[0].lower()
+    assert native_pdf.read_bytes() == source_bytes
+    assert "*" in window.windowTitle()

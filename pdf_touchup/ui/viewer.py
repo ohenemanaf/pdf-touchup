@@ -77,6 +77,12 @@ class PageView(QGraphicsView):
             self.word_items.append(item)
         self.scene().setSceneRect(QRectF(pixmap.rect()).adjusted(-16, -16, 16, 16))
 
+    def current_pixmap(self) -> QPixmap:
+        for item in self.scene().items():
+            if isinstance(item, QGraphicsPixmapItem):
+                return item.pixmap()
+        return QPixmap()
+
     def update_pixmap(self, pixmap: QPixmap) -> None:
         for item in self.scene().items():
             if isinstance(item, QGraphicsPixmapItem):

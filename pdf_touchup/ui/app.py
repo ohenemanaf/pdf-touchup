@@ -7,18 +7,21 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QObject, QSize, Qt, Signal
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QSizePolicy, QToolBar, QToolButton, QWidget)
 
 from ..document import NeedsPassword, WrongPassword, open_document, page_kind
-from ..edits import EditList, render_with_edits
-from ..model import PageText
+from ..edits import EditList, default_output_path, render_with_edits, save_as
+from ..model import Edit, PageText
 from ..ocr import OcrUnavailable, run_ocr_job
 from ..resources import resource_dir
+from ..selection import SelectionError, merge_selection
+from ..style import detect_style
 from ..text_source import PageTextCache
+from .edit_popover import EditPopover
 from .viewer import PageView
 
 APP_NAME = "PDF Touch-up"
@@ -84,6 +87,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view, 1)
         self.setCentralWidget(body)
         self._build_toolbar()
+
+        self.popover = EditPopover(self.view.viewport())
+        self.view.selection_changed.connect(self._on_selection)
+        self.popover.preview_requested.connect(self._on_preview)
+        self.popover.applied.connect(self._on_applied)
+        self.popover.cancelled.connect(self._on_cancelled)
 
         self._edits_label = QLabel("No edits")
         self._status_label = QLabel("Open a PDF to start")
@@ -222,6 +231,7 @@ class MainWindow(QMainWindow):
             self.go_to_page(self.page_index)
 
     def go_to_page(self, index: int) -> None:
+        self.popover.hide()
         self.page_index = index
         self.page_label.setText(f"Page {index + 1} / {self.doc.page_count}")
         if self.thumbs.currentRow() != index:
@@ -277,15 +287,65 @@ class MainWindow(QMainWindow):
             self.view.show_page(self._render(index), page_text.words, self.scale)
             self._set_status(self._status_for(page_text))
 
-    # ---- edit history and saving (Task 8 completes these) -------------------------
+    # ---- making a fix -------------------------------------------------------------
+    def _on_selection(self, words: list) -> None:
+        if not words or self.doc is None:
+            self._on_cancelled()
+            return
+        try:
+            rect, old = merge_selection(words)
+        except SelectionError:
+            return
+        kind = self.cache.get(self.page_index).kind
+        style = detect_style(self.doc[self.page_index], rect, old, old, kind)
+        edit = Edit(self.page_index, rect, old, old, style, kind)
+        s = self.view.scale_factor
+        scene_rect = QRectF(rect[0] * s, rect[1] * s, (rect[2] - rect[0]) * s, (rect[3] - rect[1]) * s)
+        anchor = self.view.mapFromScene(scene_rect).boundingRect()
+        self.popover.start(edit, anchor)
+
+    def _on_preview(self, edit: Edit) -> None:
+        pix = render_with_edits(self.doc, self.page_index, self.edits.items() + [edit], self.scale)
+        self.view.update_pixmap(to_qpixmap(pix))
+
+    def _on_applied(self, edit: Edit) -> None:
+        self.view.clear_selection()
+        self.edits.add(edit)
+
+    def _on_cancelled(self) -> None:
+        self.popover.hide()
+        if self.doc is not None:
+            self.view.update_pixmap(self._render(self.page_index))
+
+    # ---- edit history and saving --------------------------------------------------
     def undo(self) -> None:
+        self.popover.hide()
         self.edits.undo()
 
     def redo(self) -> None:
+        self.popover.hide()
         self.edits.redo()
 
     def save_as_dialog(self) -> None:
-        pass
+        if self.doc is None or not self.edits.items():
+            return
+        name, _ = QFileDialog.getSaveFileName(self, "Save a fixed copy", str(default_output_path(self.path)),
+                                              "PDF files (*.pdf)")
+        if not name:
+            return
+        out = Path(name)
+        if out.resolve() == self.path.resolve():
+            QMessageBox.warning(self, APP_NAME, "Please choose a different name. "
+                                "Your original file is always kept as it is.")
+            return
+        try:
+            save_as(self.path, self.edits.items(), out, self.password)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't save the file.\n\n{exc}")
+            return
+        self._saved_count = len(self.edits.items())
+        self._refresh_actions()
+        self.statusBar().showMessage(f"Saved {out.name}", 5000)
 
     def _confirm_discard(self) -> bool:
         if not self.dirty:
