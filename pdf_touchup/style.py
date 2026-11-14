@@ -7,6 +7,7 @@ import pymupdf
 from .blend import background_color, font_size_pt, guess_family, ink_color, width_scale
 from .fonts import load_font, missing_glyphs
 from .model import Rect, Style
+from .scan_pixels import fit_size_px
 
 NATIVE_DPI = 150
 SCAN_DPI = 300
@@ -84,6 +85,8 @@ def detect_style(page: pymupdf.Page, rect: Rect, old_text: str, new_text: str, k
         # A hidden text layer knows the real size; OCR boxes are tight around the ink.
         size = round(span["size"], 1) if span else font_size_pt(rect[3] - rect[1], old_text)
         family = guess_family(img, box, old_text, size * SCAN_DPI / 72, background)
+        if span is None:  # OCR boxes give only a rough size; fit it to the word's ink width
+            size = round(fit_size_px(img, box, old_text, family, None, size * SCAN_DPI / 72) * 72 / SCAN_DPI, 1)
         buffer = None
     font = load_font(family, buffer)
     return Style(family=family, size=size, color=tuple(color), background=background,

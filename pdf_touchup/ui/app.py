@@ -56,8 +56,9 @@ class MainWindow(QMainWindow):
         self._pool: ProcessPoolExecutor | None = None
         self._bridge = _Bridge()
         self._bridge.ocr_done.connect(self._on_ocr_done)
-        self._futures: dict[int, Future] = {}
+        self._inflight: tuple[int, int] | None = None  # (generation, page) being read now
         self._crash_retried: set[int] = set()
+        self._ocr_failed: set[int] = set()
         self._generation = 0
         self.doc: pymupdf.Document | None = None
         self.path: Path | None = None
@@ -196,8 +197,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP_NAME, f"Couldn't open this file.\n\n{exc}")
                 return
         self._generation += 1
-        self._cancel_ocr()
         self._crash_retried.clear()
+        self._ocr_failed.clear()
         self.doc, self.path, self.password = doc, path, password
         self.cache = PageTextCache(doc)
         self.edits = EditList()
@@ -265,7 +266,6 @@ class MainWindow(QMainWindow):
             self.thumbs.blockSignals(True)
             self.thumbs.setCurrentRow(index)
             self.thumbs.blockSignals(False)
-        self._cancel_ocr(keep=index)  # pages flicked past don't hold up this one
         pixmap = self._render(index)
         if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
             page_text = self.cache.get(index)
@@ -283,18 +283,18 @@ class MainWindow(QMainWindow):
         return STATUS_FOUND if page_text.words else STATUS_NONE
 
     # ---- background OCR -----------------------------------------------------------
+    # One page at a time: the worker process prefetches queued jobs, so queued jobs could not
+    # be cancelled reliably. Instead, when a job finishes, the page on screen *now* goes next.
     def _start_ocr(self, index: int) -> None:
-        if index in self._futures:
-            return
+        if self._inflight is not None:
+            return  # _ocr_next() picks up the current page when the worker is free
         if self._pool is None:
             self._pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
         generation = self._generation
+        self._inflight = (generation, index)
         future = self._pool.submit(run_ocr_job, str(self.path), self.password, index, self._ocr)
-        self._futures[index] = future
 
         def done(f: Future) -> None:
-            if f.cancelled():
-                return
             try:
                 result = f.result()
             except Exception as exc:  # handed to the GUI thread below
@@ -303,25 +303,28 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(done)
 
-    def _cancel_ocr(self, keep: int | None = None) -> None:
-        """Drop queued OCR jobs (a job already running finishes and is cached)."""
-        for index, future in list(self._futures.items()):
-            if index != keep and future.cancel():
-                del self._futures[index]
+    def _ocr_next(self) -> None:
+        index = self.page_index
+        if (self.doc is None or self._inflight is not None or self.cache.has(index)
+                or index in self._ocr_failed or page_kind(self.doc[index]) != "scanned"):
+            return
+        self._start_ocr(index)
 
     def _on_ocr_done(self, generation: int, index: int, result) -> None:
-        if generation != self._generation:
-            return  # a different file has been opened since
-        self._futures.pop(index, None)
+        self._inflight = None
+        if generation == self._generation:
+            self._handle_ocr_result(index, result)
+        self._ocr_next()
+
+    def _handle_ocr_result(self, index: int, result) -> None:
         if isinstance(result, BrokenProcessPool):
             # The worker died (crash, out of memory). Start a fresh one; retry this page once.
             self._pool = None
-            self._futures.clear()
-            if index == self.page_index and index not in self._crash_retried:
+            if index not in self._crash_retried:
                 self._crash_retried.add(index)
-                self._start_ocr(index)
                 return
         if isinstance(result, Exception):
+            self._ocr_failed.add(index)
             if index == self.page_index:
                 self._set_status(STATUS_NO_OCR if isinstance(result, OcrUnavailable) else STATUS_NONE)
             return

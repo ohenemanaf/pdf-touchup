@@ -75,3 +75,18 @@ def test_searchable_scan_style_uses_text_layer_size(searchable_scan_pdf):
     assert _near(s.background, CREAM, 0.03)
     assert _near(s.color, INK, 0.08)
     assert s.font_buffer is None
+
+
+@pytest.mark.ocr
+@pytest.mark.parametrize("grow", [-0.5, 2.0])
+def test_scanned_size_survives_loose_ocr_box(scanned_pdf, grow):
+    """OCR boxes on real scans are often taller or shorter than the ink (one line gave 12.1 pt
+    and 15.7 pt for neighbouring words). The size must come from the ink, not the box height."""
+    from pdf_touchup.ocr import ocr_words
+
+    page = pymupdf.open(scanned_pdf)[0]
+    w = next(w for w in ocr_words(page) if w.text == "March")
+    x0, y0, x1, y1 = w.rect
+    loose = (x0, y0 - grow, x1, y1 + grow)
+    size = detect_style(page, loose, "March", "March", "scanned").size
+    assert abs(size - 11.0) <= 0.6, size

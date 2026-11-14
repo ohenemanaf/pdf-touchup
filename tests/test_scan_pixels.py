@@ -149,3 +149,108 @@ def test_composite_draws_ink_with_grain():
     core = img[35:45, 60:140].astype(float) / 255
     assert np.abs(core.reshape(-1, 3).mean(axis=0) - np.array(INK)).max() <= 0.03
     assert core[..., 0].std() > 0.005  # not a flat fill
+
+
+@pytest.mark.parametrize("fixture", ["scanned_pdf", "rotated_scan_pdf"])
+def test_upright_round_trip_is_lossless(request, fixture):
+    """Cutting a piece out of the scan and writing it back must not duplicate or drop pixels."""
+    from pdf_touchup.scan_pixels import _sample_upright, _write_back, snap_region
+
+    page = pymupdf.open(request.getfixturevalue(fixture))[0]
+    scan = find_scan_image(page)
+    img = decode(page, scan)
+    region = snap_region(scan, pymupdf.Rect(100.37, 91.13, 181.9, 108.55))
+    upright = _sample_upright(img, scan, region, scan.px_per_pt_xy)
+    # Every image pixel in the region appears exactly once in the upright piece.
+    x0, y0, x1, y1 = px_box(scan, region)
+    assert upright.shape[0] * upright.shape[1] == (x1 - x0) * (y1 - y0)
+    copy = img.copy()
+    _write_back(copy, scan, upright, region, scan.px_per_pt_xy)
+    assert np.array_equal(copy, img)
+
+
+@pytest.mark.parametrize("sigma", [0.0, 1.0])
+@pytest.mark.parametrize("shift", [-2, -1, 1, 2])
+def test_estimate_blur_is_stable_when_box_is_off_by_pixels(shift, sigma):
+    """OCR boxes are never pixel-perfect; a box 1-2 px off must not change the answer."""
+    img = _paper(200, 400, sigma=2)
+    x0, y0, x1, y1 = _draw_text(img, "Mensah", 30, (30, 40), sigma=sigma)
+    got = estimate_blur(img, (x0 + shift, y0, x1 + shift, y1), "Mensah", "serif", None, 30)
+    assert abs(got - sigma) <= 0.5, got
+
+
+# ---- ink spread (scanned letters are bolder than clean text) ---------------------------
+from pdf_touchup.scan_pixels import estimate_ink, ink_mask  # noqa: E402
+
+
+def test_text_mask_weight_makes_strokes_heavier():
+    thin, _ = text_mask("Mensah", "serif", None, 30, 1.0)
+    bold, _ = text_mask("Mensah", "serif", None, 30, 1.0, weight=0.04)
+    assert bold.sum() > 1.15 * thin.sum()
+
+
+@pytest.mark.parametrize("weight", [0.0, 0.04])
+def test_estimate_ink_recovers_weight(weight):
+    img = _paper(200, 400, sigma=2)
+    mask, _ = text_mask("Mensah", "serif", None, 30, 1.0, weight=weight)
+    mask = gaussian_blur(mask, 1.0)
+    y, x = 40, 30
+    h, w = mask.shape
+    a = mask[..., None]
+    img[y:y + h, x:x + w] = np.clip(img[y:y + h, x:x + w] * (1 - a) + np.array(INK) * 255 * a, 0, 255).astype(np.uint8)
+    ys, xs = np.nonzero(mask > 0.1)
+    box = (x + xs.min(), y + ys.min(), x + xs.max() + 1, y + ys.max() + 1)
+    sigma, got, _, _ = estimate_ink(img, box, "Mensah", "serif", None, 30)
+    assert abs(got - weight) <= 0.015, got
+    assert abs(sigma - 1.0) <= 0.5, sigma
+
+
+@pytest.mark.parametrize("size_error", [0.9, 1.1])
+def test_estimate_ink_survives_wrong_size_guess(size_error):
+    """OCR-based size guesses are often 5-30% off; the ink estimate must still be right and
+    must report the size that actually fits the scanned word."""
+    img = _paper(200, 400, sigma=2)
+    mask, _ = text_mask("Counting", "serif", None, 32, 1.0, weight=0.02)
+    mask = gaussian_blur(mask, 1.0)
+    y, x = 40, 20
+    h, w = mask.shape
+    a = mask[..., None]
+    img[y:y + h, x:x + w] = np.clip(img[y:y + h, x:x + w] * (1 - a) + np.array(INK) * 255 * a, 0, 255).astype(np.uint8)
+    ys, xs = np.nonzero(mask > 0.1)
+    box = (x + xs.min(), y + ys.min(), x + xs.max() + 1, y + ys.max() + 1)
+    sigma, weight, size, _ = estimate_ink(img, box, "Counting", "serif", None, 32 * size_error)
+    assert abs(sigma - 1.0) <= 0.5, sigma
+    assert weight <= 0.04, weight
+    assert abs(size - 32) <= 1.6, size
+
+
+def _solidity(cov):
+    ink = cov[cov > 0.05]
+    return float((ink > 0.8).mean()) if ink.size else 0.0
+
+
+def test_estimate_ink_matches_solid_contrast_boosted_scans():
+    """Scanner apps boost contrast: letters become thick, solid ink. The fix must match how
+    solid the ink is, not only its shape, or the new word looks grey next to its neighbours."""
+    img = _paper(200, 420, sigma=2)
+    mask, _ = text_mask("Counting", "serif", None, 42, 1.0, weight=0.06)
+    mask = np.clip(gaussian_blur(mask, 1.0) * 1.5, 0, 1)  # contrast boost
+    y, x = 40, 20
+    h, w = mask.shape
+    a = mask[..., None]
+    img[y:y + h, x:x + w] = np.clip(img[y:y + h, x:x + w] * (1 - a) + np.array(INK) * 255 * a, 0, 255).astype(np.uint8)
+    ys, xs = np.nonzero(mask > 0.1)
+    box = (x + xs.min(), y + ys.min(), x + xs.max() + 1, y + ys.max() + 1)
+    look = estimate_ink(img, box, "Counting", "serif", None, 42)
+    ours = ink_mask("Counting", "serif", None, look)
+    assert abs(_solidity(ours) - _solidity(mask)) <= 0.35 * _solidity(mask), (_solidity(ours), _solidity(mask))
+
+
+def test_estimate_ink_is_fast():
+    import time
+
+    img = _paper(200, 420, sigma=2)
+    box = _draw_text(img, "Counting", 42, (40, 20), sigma=1.0)
+    start = time.perf_counter()
+    estimate_ink(img, box, "Counting", "serif", None, 42)
+    assert time.perf_counter() - start < 0.35

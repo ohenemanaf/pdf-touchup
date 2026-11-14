@@ -66,7 +66,10 @@ def test_scanned_edit_erases_old_pixels(scanned_pdf, tmp_path):
     save_as(scanned_pdf, [edit], out)
     x0, y0, x1, y1 = px_box(edit.rect)
     crop = render(out)[y0:y1, x0:x1].reshape(-1, 3) / 255
-    assert np.abs(crop - CREAM).max() <= 0.06
+    # Paper with grain (by design), no ink left.
+    assert np.abs(crop.mean(axis=0) - CREAM).max() <= 0.03
+    lum = crop @ np.array([0.299, 0.587, 0.114])
+    assert lum.min() >= 0.6
 
 
 @pytest.mark.ocr
@@ -77,8 +80,8 @@ def test_scanned_edit_replaces_word(scanned_pdf, tmp_path):
     page = pymupdf.open(out)[0]
     words = [w.text for w in ocr_words(page)]
     assert "Asante" in words and "Mensah" not in words
-    # The fix is drawn as real text, and the scan image keeps no copy of the old word.
-    assert "Asante" in page.get_text()
+    # The fix is part of the scan picture, like every other word on the page.
+    assert "Asante" not in page.get_text()
 
 
 @pytest.mark.ocr
@@ -182,3 +185,149 @@ def test_editlist_version_changes_on_every_change():
     edits.add(b)
     seen.add(edits.version)
     assert len(seen) == 4  # same edit count as earlier, different version
+
+
+# ---- scan fixes made in the image pixels -----------------------------------------------
+from pdf_touchup.scan_pixels import decode, estimate_blur, find_scan_image  # noqa: E402
+from pdf_touchup.scan_pixels import px_box as scan_px_box  # noqa: E402
+
+
+def _rendered(path, dpi=200):
+    return render(path, dpi=dpi).astype(float) / 255
+
+
+@pytest.mark.ocr
+def test_scan_fix_is_inside_the_image(scanned_pdf, tmp_path):
+    out = tmp_path / "out.pdf"
+    save_as(scanned_pdf, [make_edit(scanned_pdf)], out)
+    page = pymupdf.open(out)[0]
+    assert page.get_text().strip() == ""
+    assert len(page.get_images()) == 1
+    words = [w.text for w in ocr_words(page)]
+    assert "Asante" in words and "Mensah" not in words
+
+
+@pytest.mark.ocr
+def test_scan_fix_has_no_flat_patch(scanned_pdf, tmp_path):
+    edit = make_edit(scanned_pdf, new_text="")
+    out = tmp_path / "out.pdf"
+    save_as(scanned_pdf, [edit], out)
+    img = _rendered(out)
+    x0, y0, x1, y1 = px_box_200(edit.rect)
+    erased = img[y0:y1, x0:x1, 0]
+    nearby = img[y0 - 40:y0 - 15, x0:x1, 0]
+    assert erased.std() >= 0.5 * nearby.std()
+
+
+def px_box_200(rect, dpi=200):
+    s = dpi / 72
+    return tuple(int(round(v * s)) for v in rect)
+
+
+@pytest.mark.ocr
+def test_scan_fix_blur_matches_neighbours(scanned_pdf, tmp_path):
+    edit = make_edit(scanned_pdf)
+    out = tmp_path / "out.pdf"
+    save_as(scanned_pdf, [edit], out)
+    page = pymupdf.open(out)[0]
+    scan = find_scan_image(page)
+    img = decode(page, scan)
+    words = {w.text: w for w in ocr_words(page)}
+    size_px = edit.style.size * scan.px_per_pt
+    new = estimate_blur(img, scan_px_box(scan, words["Asante"].rect), "Asante", "serif", None, size_px,
+                        h_scale=edit.style.h_scale)
+    old = estimate_blur(img, scan_px_box(scan, words["Kwame"].rect), "Kwame", "serif", None, size_px)
+    assert abs(new - old) <= 0.75, (new, old)
+
+
+@pytest.mark.ocr
+def test_scan_fix_keeps_jpeg_and_size(native_pdf, tmp_path):
+    from conftest import scan_image
+
+    src = tmp_path / "jpeg-scan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=scan_image(native_pdf).tobytes("jpg", jpg_quality=85))
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    save_as(src, [make_edit(src)], out)
+    assert out.stat().st_size < 2 * src.stat().st_size
+    page = pymupdf.open(out)[0]
+    assert page.parent.extract_image(page.get_images()[0][0])["ext"] in ("jpeg", "jpg")
+
+
+@pytest.mark.ocr
+def test_shared_image_other_pages_untouched(native_pdf, tmp_path):
+    from conftest import scan_image
+
+    src = tmp_path / "shared.pdf"
+    doc = pymupdf.open()
+    first = doc.new_page(width=595, height=842)
+    xref = first.insert_image(first.rect, stream=scan_image(native_pdf).tobytes("png"))
+    second = doc.new_page(width=595, height=842)
+    second.insert_image(second.rect, xref=xref)
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    save_as(src, [make_edit(src)], out)
+    result = pymupdf.open(out)
+    assert "Mensah" not in [w.text for w in ocr_words(result[0])]
+    assert "Mensah" in [w.text for w in ocr_words(result[1])]
+
+
+@pytest.mark.ocr
+def test_scan_fix_keeps_tight_neighbour_lines(native_pdf, tmp_path):
+    from conftest import FONTS, scan_image
+
+    native = tmp_path / "tight-native.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    for i, line in enumerate(["Upper words here", "Name: Kwame Mensah", "Lower words here"]):
+        page.insert_text((72, 100 + 12 * i), line, fontsize=11, fontname="F0",
+                         fontfile=str(FONTS / "LiberationSerif-Regular.ttf"))
+    doc.save(native)
+    src = tmp_path / "tight-scan.pdf"
+    scan = pymupdf.open()
+    p = scan.new_page(width=595, height=842)
+    p.insert_image(p.rect, stream=scan_image(native).tobytes("png"))
+    scan.save(src)
+    out = tmp_path / "out.pdf"
+    save_as(src, [make_edit(src)], out)
+    words = [w.text for w in ocr_words(pymupdf.open(out)[0])]
+    assert words.count("words") == 2 and words.count("here") == 2
+    assert "Asante" in words and "Mensah" not in words
+
+
+@pytest.mark.ocr
+def test_fast_preview_matches_saved_result(native_pdf, tmp_path):
+    from conftest import scan_image
+
+    src = tmp_path / "jpeg-scan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=scan_image(native_pdf).tobytes("jpg", jpg_quality=85))
+    doc.save(src)
+    edit = make_edit(src)
+    saved = tmp_path / "out.pdf"
+    save_as(src, [edit], saved)
+    preview = render_with_edits(open_document(src), 0, [edit], zoom=2.0)
+    final = pymupdf.open(saved)[0].get_pixmap(matrix=pymupdf.Matrix(2, 2), alpha=False)
+    a = np.frombuffer(preview.samples, np.uint8).astype(int)
+    b = np.frombuffer(final.samples, np.uint8).astype(int)
+    assert np.abs(a - b).mean() < 2.0  # only JPEG rounding differs
+
+
+def test_preview_skips_jpeg_encoding(native_pdf, tmp_path, monkeypatch):
+    from conftest import scan_image
+    import pdf_touchup.scan_pixels as sp
+
+    src = tmp_path / "jpeg-scan.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=scan_image(native_pdf).tobytes("jpg", jpg_quality=85))
+    doc.save(src)
+    edit = make_edit(src)
+    calls = []
+    real = sp._encode
+    monkeypatch.setattr(sp, "_encode", lambda *a, **k: calls.append(1) or real(*a, **k))
+    render_with_edits(open_document(src), 0, [edit], zoom=1.0)
+    assert calls == []
