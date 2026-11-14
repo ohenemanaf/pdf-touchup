@@ -254,3 +254,34 @@ def test_estimate_ink_is_fast():
     start = time.perf_counter()
     estimate_ink(img, box, "Counting", "serif", None, 42)
     assert time.perf_counter() - start < 0.35
+
+
+def _ink_fill(cov):
+    ink = sp_crop(cov)
+    return float(ink.mean())
+
+
+def sp_crop(cov):
+    from pdf_touchup.scan_pixels import _crop_ink
+
+    return _crop_ink(cov, 0.3)
+
+
+@pytest.mark.parametrize("weight,sigma,boost", [(0.0, 0.5, 1.0), (0.02, 1.0, 1.3), (0.06, 1.5, 1.6)])
+def test_new_ink_matches_scanned_boldness(weight, sigma, boost):
+    """The new word must look as heavy as the scanned one: same average ink in its box."""
+    from pdf_touchup.scan_pixels import _coverage
+
+    img = _paper(200, 420, sigma=2)
+    mask, _ = text_mask("Counting", "serif", None, 32, 1.0, weight=weight)
+    mask = np.clip(gaussian_blur(mask, sigma) * boost, 0, 1)
+    y, x = 40, 20
+    h, w = mask.shape
+    a = mask[..., None]
+    img[y:y + h, x:x + w] = np.clip(img[y:y + h, x:x + w] * (1 - a) + np.array(INK) * 255 * a, 0, 255).astype(np.uint8)
+    ys, xs = np.nonzero(mask > 0.1)
+    box = (x + xs.min(), y + ys.min(), x + xs.max() + 1, y + ys.max() + 1)
+    look = estimate_ink(img, box, "Counting", "serif", None, 32)
+    ours = ink_mask("Counting", "serif", None, look)
+    scanned = _coverage(img, box)
+    assert abs(_ink_fill(ours) - _ink_fill(scanned)) <= 0.12 * _ink_fill(scanned), (_ink_fill(ours), _ink_fill(scanned), look)

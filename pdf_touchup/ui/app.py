@@ -366,8 +366,10 @@ class MainWindow(QMainWindow):
                 rect, old = merge_selection(words)
             except SelectionError:
                 return
-            kind = self.cache.get(self.page_index).kind
-            style = detect_style(self.doc[self.page_index], rect, old, old, kind)
+            page_text = self.cache.get(self.page_index)
+            kind = page_text.kind
+            line = [w for w in page_text.words if w.line_id == words[0].line_id]
+            style = detect_style(self.doc[self.page_index], rect, old, old, kind, line_words=line)
             edit = Edit(self.page_index, rect, old, old, style, kind)
         s = self.view.scale_factor
         scene_rect = QRectF(rect[0] * s, rect[1] * s, (rect[2] - rect[0]) * s, (rect[3] - rect[1]) * s)

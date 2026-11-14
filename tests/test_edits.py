@@ -354,3 +354,76 @@ def test_undo_replacement_restores_previous_fix():
     edits.add(b)
     edits.undo()
     assert [e.new_text for e in edits.items()] == ["Asante"]
+
+
+# ---- review fixes (scan pixel fixes) ---------------------------------------------------
+
+def _scan_of(tmp_path, name, lines):
+    """A scanned PDF of the given (position, text) lines in Liberation Serif 11 pt."""
+    from conftest import FONTS, scan_image
+
+    native = tmp_path / f"{name}-native.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    for pos, text in lines:
+        page.insert_text(pos, text, fontsize=11, fontname="F0",
+                         fontfile=str(FONTS / "LiberationSerif-Regular.ttf"))
+    doc.save(native)
+    src = tmp_path / f"{name}.pdf"
+    scan = pymupdf.open()
+    p = scan.new_page(width=595, height=842)
+    p.insert_image(p.rect, stream=scan_image(native).tobytes("png"))
+    scan.save(src)
+    return src
+
+
+@pytest.mark.ocr
+def test_long_replacement_is_not_cut_off(scanned_pdf, tmp_path):
+    out = tmp_path / "out.pdf"
+    save_as(scanned_pdf, [make_edit(scanned_pdf, new_text="Mensah-Asante Boateng")], out)
+    words = [w.text for w in ocr_words(pymupdf.open(out)[0])]
+    assert "Boateng" in words, words
+
+
+def _ink_bottom(img, x0, x1, y0, y1):
+    lum = img[y0:y1, x0:x1] @ np.array([0.299, 0.587, 0.114])
+    rows = np.nonzero((lum < 0.5).any(axis=1))[0]
+    return y0 + rows.max()
+
+
+@pytest.mark.ocr
+def test_new_word_sits_on_the_line_baseline_when_line_has_descenders(tmp_path):
+    src = _scan_of(tmp_path, "desc", [((72, 100), "We can see you soon")])
+    edit = make_edit(src, old_words=("see",), new_text="man")
+    out = tmp_path / "out.pdf"
+    save_as(src, [edit], out)
+    img = render(out).astype(float) / 255
+    can = next(w for w in ocr_words(pymupdf.open(src)[0]) if w.text == "can")
+    cx0, cy0, cx1, cy1 = px_box(can.rect)
+    nx0, _, nx1, _ = px_box(edit.rect)
+    top, bottom = cy0 - 10, cy1 + 25
+    assert abs(_ink_bottom(img, nx0, nx1, top, bottom) - _ink_bottom(img, cx0, cx1, top, bottom)) <= 1
+
+
+def test_stencil_mask_scan_falls_back_instead_of_crashing(native_pdf, tmp_path):
+    from conftest import scan_image
+    from pdf_touchup.model import Style
+
+    gray = pymupdf.Pixmap(pymupdf.csGRAY, scan_image(native_pdf))
+    w, h = gray.width, gray.height
+    g = np.frombuffer(gray.samples, np.uint8).reshape(h, w)
+    src = tmp_path / "stencil.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(page.rect, stream=gray.tobytes("png"))
+    xref = page.get_images()[0][0]
+    doc.update_object(xref, f"<</Type/XObject/Subtype/Image/Width {w}/Height {h}/ImageMask true>>")
+    doc.update_stream(xref, np.packbits(g > 160, axis=1).tobytes(), compress=True)
+    doc.save(src)
+    rect = next(x[:4] for x in pymupdf.open(native_pdf)[0].get_text("words") if x[4] == "Mensah")
+    style = Style("serif", 11.0, (0.16, 0.16, 0.24), (0.96, 0.94, 0.88))
+    edit = Edit(0, rect, "Mensah", "Asante", style, "scanned")
+    render_with_edits(open_document(src), 0, [edit], zoom=1.0)  # must not raise
+    out = tmp_path / "out.pdf"
+    save_as(src, [edit], out)
+    assert pymupdf.open(out)[0].get_pixmap(dpi=50).width > 0

@@ -54,9 +54,13 @@ def find_scan_image(page: pymupdf.Page) -> ScanImage | None:
     """The image covering most of the page, if it is placed without skew."""
     area = abs(page.mediabox)
     best = None
+    doc = page.parent
     for info in page.get_image_info(xrefs=True):
         cover = abs(pymupdf.Rect(info["bbox"]) & page.mediabox)
-        if info.get("xref", 0) > 0 and cover >= FULL_PAGE_IMAGE * area:
+        xref = info.get("xref", 0)
+        if xref > 0 and doc.xref_get_key(xref, "ImageMask")[1] == "true":
+            continue  # a stencil (1-bit mask painted in the fill colour): not a picture we can edit
+        if xref > 0 and cover >= FULL_PAGE_IMAGE * area:
             if best is None or cover > abs(pymupdf.Rect(best["bbox"]) & page.mediabox):
                 best = info
     if best is None:
@@ -233,22 +237,23 @@ FIT_PAD_Y = 0.15  # share of the box height looked at above and below when measu
 
 
 def fit_size_px(img: np.ndarray, box, text: str, family: str, font_buffer: bytes | None,
-                size_px: float, h_scale: float = 1.0) -> float:
-    """Correct a font-size guess so `text` renders exactly as wide as the scanned ink in `box`.
+                size_px: float, h_scale: float = 1.0, by: str = "width") -> float:
+    """Correct a font-size guess so `text` renders exactly as wide (or tall) as the ink in `box`.
     The box is grown a little vertically first: a slightly tight box can clip serifs at the
     baseline, which are often the widest part of a word."""
     x0, y0, x1, y1 = box
     grow = int(round((y1 - y0) * FIT_PAD_Y))
     box = (x0, max(0, y0 - grow), x1, min(img.shape[0], y1 + grow))
+    axis = 1 if by == "width" else 0  # "height" ignores missing spaces in misread OCR text
     ink = _crop_ink(_coverage(img, box), 0.3)
-    if ink.size == 0 or ink.max() <= 0.3 or ink.shape[1] < 3:
+    if ink.size == 0 or ink.max() <= 0.3 or ink.shape[axis] < 3:
         return size_px
-    clean_width = _crop_ink(text_mask(text, family, font_buffer, size_px, h_scale)[0], 0.3).shape[1]
-    return size_px * ink.shape[1] / clean_width if clean_width >= 3 else size_px
+    clean = _crop_ink(text_mask(text, family, font_buffer, size_px, h_scale)[0], 0.3).shape[axis]
+    return size_px * ink.shape[axis] / clean if clean >= 3 else size_px
 
 
 ALIGN_SEARCH = 3  # px searched around the ink-box alignment
-GAIN_RANGE = (1.0, 4.0)
+GAIN_RANGE = (0.6, 3.0)  # below 1 lightens, above 1 darkens
 
 
 class InkLook(NamedTuple):
@@ -264,14 +269,18 @@ def _solidity(cov: np.ndarray) -> float:
     return float((ink > 0.8).mean()) if ink.size else 0.0
 
 
-def _match_gain(blurred: np.ndarray, solidity: float) -> float:
-    """Contrast boost that gives `blurred` the target share of solid ink."""
+def _ink_fill(cov: np.ndarray) -> float:
+    """Average ink over the word's ink box: how heavy the word looks."""
+    ink = _crop_ink(cov, 0.3)
+    return float(ink.mean()) if ink.size else 0.0
+
+
+def _match_gain(blurred: np.ndarray, fill: float) -> float:
+    """Contrast that gives `blurred` the target average ink (looks equally heavy)."""
     lo, hi = GAIN_RANGE
-    if _solidity(np.clip(blurred * lo, 0, 1)) >= solidity:
-        return lo
-    for _ in range(10):
+    for _ in range(12):
         mid = (lo + hi) / 2
-        if _solidity(np.clip(blurred * mid, 0, 1)) < solidity:
+        if _ink_fill(np.clip(blurred * mid, 0, 1)) < fill:
             lo = mid
         else:
             hi = mid
@@ -317,14 +326,14 @@ def estimate_ink(img: np.ndarray, box, old_text: str, family: str, font_buffer: 
     if target.size == 0 or target.max() <= 0.3:
         return InkLook(1.0, 0.0, size_px, 1.0)
     size_px = fit_size_px(img, padded, old_text, family, font_buffer, size_px, h_scale)
-    solidity = _solidity(target)
+    fill = _ink_fill(target)
     target = np.pad(target, SLIDE_MARGIN)
     best, best_score = InkLook(0.0, 0.0, size_px, 1.0), -2.0
     for weight in WEIGHT_CANDIDATES:
         clean, _ = text_mask(old_text, family, font_buffer, size_px, h_scale, weight)
         for sigma in BLUR_CANDIDATES:
             blurred = gaussian_blur(clean, sigma)
-            gain = _match_gain(blurred, solidity)
+            gain = _match_gain(blurred, fill)
             candidate = _crop_ink(np.clip(blurred * gain, 0, 1), threshold=0.05)
             score = _aligned_ncc(target, candidate)
             if score > best_score:
@@ -421,6 +430,19 @@ ERASE_PAD_X_PX = 2  # image pixels erased left and right of the word box
 BAND_SHARE = 0.25  # paper band height used for the fill, as a share of the line height
 
 
+BASELINE_ROW_SHARE = 0.35  # rows with less ink than this share of the fullest row are descenders
+
+
+def ink_baseline_row(coverage: np.ndarray) -> int | None:
+    """Row index of the baseline in a word's ink coverage: the last row that still holds a good
+    share of the ink. Descenders (g, j, p, q, y) are thin, so their rows fall below the share."""
+    rows = (coverage > 0.3).sum(axis=1)
+    if rows.max() == 0:
+        return None
+    strong = np.nonzero(rows >= BASELINE_ROW_SHARE * rows.max())[0]
+    return int(strong.max())
+
+
 def baseline_y(rect: Rect, kind: str, old_text: str, size: float, font: pymupdf.Font) -> float:
     """Display-space y of the baseline new text should sit on."""
     if kind == "scanned":  # OCR boxes hug the ink
@@ -477,7 +499,7 @@ def _replace_in_place(doc: pymupdf.Document, scan: ScanImage, img: np.ndarray, p
     is thrown away after rendering."""
     h, w = img.shape[:2]
     xref = scan.xref
-    for key in ("DecodeParms", "Decode", "Filter", "Mask"):
+    for key in ("DecodeParms", "Decode", "Filter", "Mask", "ImageMask", "SMaskInData"):
         doc.xref_set_key(xref, key, "null")
     if preview:
         doc.update_stream(xref, np.ascontiguousarray(img).tobytes(), compress=False)
@@ -503,7 +525,10 @@ def apply_scan_edits(page: pymupdf.Page, edits: list, preview: bool = False) -> 
     scan = find_scan_image(page)
     if scan is None or (scan.shared and abs(page.rotation) % 360):
         return False
-    img = decode(page, scan)
+    try:
+        img = decode(page, scan)
+    except Exception:  # an image MuPDF cannot turn into RGB pixels: draw on top instead
+        return False
     sx, sy = s = scan.px_per_pt_xy
     rng = np.random.default_rng(0)
     for edit in edits:
@@ -513,8 +538,13 @@ def apply_scan_edits(page: pymupdf.Page, edits: list, preview: bool = False) -> 
         erase = pymupdf.Rect(r.x0 - ERASE_PAD_X_PX / sx, r.y0 - ERASE_PAD_Y * line_h,
                              r.x1 + ERASE_PAD_X_PX / sx, r.y1 + ERASE_PAD_Y * line_h)
         band_pt = max(3 / sy, BAND_SHARE * line_h)
-        region = snap_region(scan, pymupdf.Rect(erase.x0, erase.y0 - band_pt,
-                                                erase.x1 + 2 * st.size, erase.y1 + band_pt))
+        font = load_font(st.family, st.font_buffer)
+        # Room for the whole new word (it may be longer than the old one) plus blur margin.
+        new_right = r.x0 + font.text_length(edit.new_text, st.size) * st.h_scale
+        margin = 0.6 * st.size
+        region = snap_region(scan, pymupdf.Rect(
+            min(erase.x0, r.x0 - margin), min(erase.y0 - band_pt, r.y0 - margin),
+            max(erase.x1, new_right) + margin, max(erase.y1 + band_pt, r.y1 + margin)))
         upright = _sample_upright(img, scan, region, s)
 
         def local(rect: pymupdf.Rect) -> tuple[int, int, int, int]:
@@ -532,13 +562,18 @@ def apply_scan_edits(page: pymupdf.Page, edits: list, preview: bool = False) -> 
             if len(_LOOK_CACHE) > 128:
                 _LOOK_CACHE.clear()
             _LOOK_CACHE[key] = look
-        grain = paper_fill(upright, local(erase), band=max(3, int(round(band_pt * sy))), rng=rng)
+        # Baseline from the old word's ink (OCR boxes take the line's depth, not the word's).
+        lx0, ly0, lx1, ly1 = local(r)
+        ink_row = ink_baseline_row(_coverage(upright, (lx0, ly0, lx1, ly1)))
+        base = (region.y0 + (ly0 + ink_row + 1) / sy if ink_row is not None
+                else baseline_y(edit.rect, edit.kind, edit.old_text, st.size, font))
+        erase_box = local(erase)
+        erase_box = (erase_box[0], erase_box[1], erase_box[2], max(erase_box[3], ly1))
+        grain = paper_fill(upright, erase_box, band=max(3, int(round(band_pt * sy))), rng=rng)
         if edit.new_text:
-            font = load_font(st.family, st.font_buffer)
             mask, (ox, oy) = text_mask(edit.new_text, st.family, st.font_buffer, size_px,
                                        st.h_scale * aspect, look.weight)
             mask = np.clip(gaussian_blur(mask, look.sigma) * look.gain, 0, 1)
-            base = baseline_y(edit.rect, edit.kind, edit.old_text, st.size, font)
             top_left = (int(round((r.x0 - region.x0) * sx - ox)), int(round((base - region.y0) * sy - oy)))
             composite(upright, mask, top_left, st.color, grain, rng)
         _write_back(img, scan, upright, region, s)
