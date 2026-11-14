@@ -4,10 +4,6 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).parent
 PKG = ROOT / "pdf_touchup"
-TESS = ROOT / "packaging" / "vendor" / "tesseract"
-
-if not (TESS / "tessdata" / "eng.traineddata").is_file():
-    raise SystemExit("Run packaging/fetch_tessdata.ps1 (or copy eng.traineddata) first")
 
 a = Analysis(
     [str(PKG / "__main__.py")],
@@ -15,7 +11,7 @@ a = Analysis(
     datas=[
         (str(PKG / "fonts"), "pdf_touchup/fonts"),
         (str(PKG / "ui" / "style.qss"), "pdf_touchup/ui"),
-        (str(TESS / "tessdata"), "tesseract/tessdata"),
+        (str(PKG / "tessdata"), "pdf_touchup/tessdata"),
     ],
     hiddenimports=["pdf_touchup.ocr", "pdf_touchup.selftest"],
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick",

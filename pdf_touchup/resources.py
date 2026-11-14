@@ -23,10 +23,9 @@ def _tess_dir(base: Path) -> tuple[Path, Path] | None:
 
 
 def tesseract_paths() -> tuple[Path, Path] | None:
-    """(tesseract dir, tessdata dir), or None when no English OCR data can be found."""
-    candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        candidates.append(Path(sys._MEIPASS) / "tesseract")  # type: ignore[attr-defined]
+    """(tesseract dir, tessdata dir), or None when no English OCR data can be found.
+    The data shipped inside the package comes first; a system Tesseract is only a fallback."""
+    candidates: list[Path] = [resource_dir()]
     if os.environ.get("PDF_TOUCHUP_TESSERACT"):
         candidates.append(Path(os.environ["PDF_TOUCHUP_TESSERACT"]))
     exe = shutil.which("tesseract")
