@@ -439,3 +439,13 @@ def test_shortcuts(window, native_pdf):
     window.zoom_out_action.trigger()
     window.zoom_out_action.trigger()
     assert window.zoom_pct == 75
+
+
+def test_header_buttons_follow_what_is_possible(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    assert not window.save_button.isEnabled()
+    assert not window.undo_button.isEnabled() and not window.redo_button.isEnabled()
+    _apply_on(qtbot, window, ["March"], "April")
+    assert window.save_button.isEnabled() and window.undo_button.isEnabled()
+    window.undo_action.trigger()
+    assert window.redo_button.isEnabled() and not window.undo_button.isEnabled()

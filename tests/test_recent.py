@@ -42,3 +42,20 @@ def test_relative_day():
     assert relative_day(now - timedelta(days=1), now) == "yesterday"
     assert relative_day(now - timedelta(days=3), now) == "3 days ago"
     assert relative_day(datetime(2026, 3, 12, 9, 0), now) == "12 Mar"
+
+
+import json  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("raw", [
+    '[{"path": null}]', '[{"path": 5}]', '[{"path": ""}]', '"not a list"', '{"path": "x"}', "garbage",
+    '[{"path": "C:/x.pdf", "opened_at": 5}]', '[{"path": "C:/x.pdf", "kind": 7}]',
+])
+def test_corrupt_recent_settings_never_crash(settings, tmp_path, raw):
+    settings.setValue("recent", raw)
+    recent = RecentFiles(settings)
+    assert recent.items() == [] or all(r.path.is_file() for r in recent.items())
+    recent.add(_touch(tmp_path, "ok.pdf"), "Typed")  # and the list repairs itself
+    assert [r.path.name for r in recent.items()] == ["ok.pdf"]

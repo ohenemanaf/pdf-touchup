@@ -22,11 +22,14 @@ class RecentFiles:
         self._settings = settings
 
     def _load(self) -> list[dict]:
+        """Saved entries, skipping anything malformed (a bad value must never stop the app)."""
         try:
             data = json.loads(self._settings.value(KEY, "[]") or "[]")
-            return [d for d in data if isinstance(d, dict) and "path" in d]
         except (TypeError, ValueError):
             return []
+        if not isinstance(data, list):
+            return []
+        return [d for d in data if isinstance(d, dict) and isinstance(d.get("path"), str) and d["path"]]
 
     def add(self, path: Path, kind: str) -> None:
         path = Path(path).resolve()
@@ -43,9 +46,10 @@ class RecentFiles:
                 continue  # moved or deleted since
             try:
                 when = datetime.fromisoformat(d.get("opened_at", ""))
-            except ValueError:
+            except (TypeError, ValueError):
                 when = datetime.now()
-            out.append(RecentFile(path, d.get("kind", ""), when))
+            kind = d.get("kind") if isinstance(d.get("kind"), str) else ""
+            out.append(RecentFile(path, kind, when))
         return out[:MAX_RECENT]
 
     def clear(self) -> None:

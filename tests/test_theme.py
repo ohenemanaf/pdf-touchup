@@ -54,3 +54,42 @@ def test_theme_switch_recolours_page_background(qtbot, settings, native_pdf):
     finally:
         apply_theme(app, "light")
         w.close()
+
+
+def _contrast(a, b):
+    def lum(c):
+        def ch(v):
+            v /= 255
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue())
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("theme,os_bg", [("light", "#1e1e1e"), ("dark", "#f0f0f0")])
+def test_dialog_text_readable_whatever_the_windows_theme(qtbot, theme, os_bg):
+    """Message boxes must get the theme's background too, not just its text colour: in light theme
+    on dark-mode Windows the unsaved-fixes prompt was dark text on a dark background."""
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QMessageBox
+
+    app = QApplication.instance()
+    old = app.palette()
+    pal = QPalette(old)
+    for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+        pal.setColor(role, QColor(os_bg))  # pretend the OS theme is the opposite one
+    app.setPalette(pal)
+    try:
+        apply_theme(app, theme)
+        box = QMessageBox(QMessageBox.Question, "PDF Touch-up", "You have unsaved fixes. Save them first?")
+        qtbot.addWidget(box)
+        box.show()
+        img = box.grab().toImage()
+        bg = img.pixelColor(3, 3)
+        assert _contrast(bg, QColor(PALETTES[theme]["text"])) >= 4.5, (bg.name(), theme)
+    finally:
+        app.setPalette(old)
+        apply_theme(app, "light")

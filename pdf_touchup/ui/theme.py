@@ -33,6 +33,13 @@ PALETTES: dict[str, dict[str, str]] = {
 _QSS = Template("""
 * { font-family: "Segoe UI", "Inter", sans-serif; font-size: 14px; color: $text; }
 QMainWindow, QStackedWidget, QWidget#editorPage, QWidget#startPage { background: $bg; }
+QDialog, QMessageBox, QInputDialog, QColorDialog { background: $surface; }
+QMessageBox QLabel, QInputDialog QLabel { background: transparent; }
+QMenu { background: $surface; border: 1px solid $border; padding: 4px; }
+QMenu::item { padding: 6px 18px; border-radius: 6px; }
+QMenu::item:selected { background: $accent_soft; color: $text; }
+QMenu::item:disabled { color: $text_faint; }
+QMenu::separator { height: 1px; background: $border; margin: 4px 6px; }
 QToolTip { background: $toast_bg; color: $toast_text; border: none; padding: 4px 8px; border-radius: 6px; }
 
 /* header */

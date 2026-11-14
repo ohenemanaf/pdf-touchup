@@ -289,6 +289,9 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(has_doc and bool(self.edits.items()))
         self.undo_action.setEnabled(self.edits.can_undo)
         self.redo_action.setEnabled(self.edits.can_redo)
+        self.save_button.setEnabled(self.save_action.isEnabled())
+        self.undo_button.setEnabled(self.undo_action.isEnabled())
+        self.redo_button.setEnabled(self.redo_action.isEnabled())
         n = len(self.edits.items())
         self._edits_label.setText("No edits" if n == 0 else f"Edits on this file: {n}")
         name = self.path.name if self.path else ""
