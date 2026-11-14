@@ -386,3 +386,13 @@ def test_panel_click_jumps_to_page_and_thumbnail_badges(qtbot, window, tmp_path)
     assert window.thumb_badge(1) == 1 and window.thumb_badge(0) == 0
     qtbot.mouseClick(card.undo_button, Qt.LeftButton)
     assert window.thumb_badge(1) == 0
+
+
+def test_flash_survives_page_redraw(qtbot, window, native_pdf):
+    """Jumping to a fix outlines it briefly; a redraw in the meantime must not raise."""
+    from PySide6.QtCore import QRectF
+
+    window.open_path(native_pdf)
+    window.view.flash_rect(QRectF(10, 10, 50, 20))
+    window.go_to_page(0)  # redraw clears the scene, deleting the outline
+    qtbot.wait(1100)  # the outline's removal timer fires here

@@ -1,6 +1,7 @@
 """The page canvas: shows a rendered page and lets the user pick words on one line."""
 from __future__ import annotations
 
+import shiboken6
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPen, QPixmap
 from PySide6.QtWidgets import (QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
@@ -96,6 +97,8 @@ class PageView(QGraphicsView):
         self.scene().addItem(item)
 
         def remove() -> None:
+            if not shiboken6.isValid(item):
+                return  # the page was redrawn meanwhile and the outline already went with it
             if item.scene() is not None:
                 item.scene().removeItem(item)
 
