@@ -328,17 +328,16 @@ def estimate_ink(img: np.ndarray, box, old_text: str, family: str, font_buffer: 
     size_px = fit_size_px(img, padded, old_text, family, font_buffer, size_px, h_scale)
     fill = _ink_fill(target)
     target = np.pad(target, SLIDE_MARGIN)
-    best, best_score = InkLook(0.0, 0.0, size_px, 1.0), -2.0
+    # Shape first (NCC ignores overall darkness), then darkness once for the winning shape.
+    best, best_score, best_blurred = (0.0, 0.0), -2.0, None
     for weight in WEIGHT_CANDIDATES:
         clean, _ = text_mask(old_text, family, font_buffer, size_px, h_scale, weight)
         for sigma in BLUR_CANDIDATES:
             blurred = gaussian_blur(clean, sigma)
-            gain = _match_gain(blurred, fill)
-            candidate = _crop_ink(np.clip(blurred * gain, 0, 1), threshold=0.05)
-            score = _aligned_ncc(target, candidate)
+            score = _aligned_ncc(target, _crop_ink(blurred, threshold=0.05))
             if score > best_score:
-                best, best_score = InkLook(sigma, weight, size_px, gain), score
-    return best
+                best, best_score, best_blurred = (sigma, weight), score, blurred
+    return InkLook(best[0], best[1], size_px, _match_gain(best_blurred, fill))
 
 
 def estimate_blur(img: np.ndarray, box, old_text: str, family: str, font_buffer: bytes | None,
