@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QRectF, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -19,11 +19,11 @@ from ..document import NeedsPassword, WrongPassword, open_document, page_kind
 from ..edits import EditList, default_output_path, render_with_edits, save_as
 from ..model import Edit, PageText
 from ..ocr import OcrUnavailable, run_ocr_job
-from ..resources import resource_dir
 from ..selection import SelectionError, display_words, merge_selection
 from ..style import detect_style
 from ..text_source import PageTextCache
 from .edit_popover import EditPopover
+from .theme import apply_theme, saved_theme
 from .viewer import PageView
 
 APP_NAME = "PDF Touch-up"
@@ -51,9 +51,10 @@ class _Bridge(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, ocr=None):
+    def __init__(self, ocr=None, settings: QSettings | None = None):
         super().__init__()
         self._ocr = ocr
+        self.settings = settings if settings is not None else app_settings()
         self._pool: ProcessPoolExecutor | None = None
         self._bridge = _Bridge()
         self._bridge.ocr_done.connect(self._on_ocr_done)
@@ -444,14 +445,17 @@ class MainWindow(QMainWindow):
             self._pool = None
 
 
+def app_settings() -> QSettings:
+    return QSettings(APP_NAME, APP_NAME)
+
+
 def main() -> None:
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    qss = resource_dir() / "ui" / "style.qss"
-    if qss.is_file():
-        app.setStyleSheet(qss.read_text(encoding="utf-8"))
-    window = MainWindow()
+    settings = app_settings()
+    apply_theme(app, saved_theme(settings))
+    window = MainWindow(settings=settings)
     window.resize(1200, 860)
     window.show()
     if len(sys.argv) > 1:

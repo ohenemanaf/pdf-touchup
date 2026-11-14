@@ -22,7 +22,7 @@ include = ["pdf_touchup*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-pdf_touchup = ["fonts/*", "tessdata/*", "ui/*.qss"]
+pdf_touchup = ["fonts/*", "tessdata/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
