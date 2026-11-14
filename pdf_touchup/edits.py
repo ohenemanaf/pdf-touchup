@@ -54,7 +54,9 @@ class EditList:
         return edit
 
     def items(self) -> list[Edit]:
-        return list(self._done)
+        """Active fixes, leaving out any fix that a later active fix replaces."""
+        replaced = {id(e.replaces) for e in self._done if e.replaces is not None}
+        return [e for e in self._done if id(e) not in replaced]
 
     @property
     def can_undo(self) -> bool:

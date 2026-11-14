@@ -248,3 +248,18 @@ def test_ocr_recovers_after_worker_crash(qtbot, scanned_pdf, tmp_path, monkeypat
         qtbot.waitUntil(lambda: w.page_status() == "Scanned page · text found", timeout=30000)
     finally:
         w.close()
+
+
+def test_refix_replaces_instead_of_stacking(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _apply(qtbot, window, "Kwame Asante")
+    _click_word(qtbot, window.view, "Kwame Asante")
+    qtbot.waitUntil(lambda: window.popover.isVisible())
+    assert window.popover.old_text.text() == "Kwame Mensah"
+    assert window.popover.new_text.text() == "Kwame Asante"
+    window.popover.new_text.setText("Kwame Boateng")
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+    assert [e.new_text for e in window.edits.items()] == ["Kwame Boateng"]
+    assert [i.word.text for i in window.view.word_items if i.word.line_id[0] == "edit"] == ["Kwame Boateng"]
+    window.undo_action.trigger()
+    assert [e.new_text for e in window.edits.items()] == ["Kwame Asante"]

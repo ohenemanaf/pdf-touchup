@@ -331,3 +331,26 @@ def test_preview_skips_jpeg_encoding(native_pdf, tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "_encode", lambda *a, **k: calls.append(1) or real(*a, **k))
     render_with_edits(open_document(src), 0, [edit], zoom=1.0)
     assert calls == []
+
+
+# ---- re-editing a fixed word -----------------------------------------------------------
+from dataclasses import replace as dc_replace  # noqa: E402
+
+
+def test_items_hides_replaced_edit():
+    a = Edit(0, (0, 0, 10, 10), "Mensah", "Asante", None, "native")
+    b = dc_replace(a, new_text="Boateng", replaces=a)
+    edits = EditList()
+    edits.add(a)
+    edits.add(b)
+    assert edits.items() == [b]
+
+
+def test_undo_replacement_restores_previous_fix():
+    a = Edit(0, (0, 0, 10, 10), "Mensah", "Asante", None, "native")
+    b = dc_replace(a, new_text="Boateng", replaces=a)
+    edits = EditList()
+    edits.add(a)
+    edits.add(b)
+    edits.undo()
+    assert [e.new_text for e in edits.items()] == ["Asante"]

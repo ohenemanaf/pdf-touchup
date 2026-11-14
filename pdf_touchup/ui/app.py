@@ -5,6 +5,7 @@ import multiprocessing
 import sys
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
@@ -19,7 +20,7 @@ from ..edits import EditList, default_output_path, render_with_edits, save_as
 from ..model import Edit, PageText
 from ..ocr import OcrUnavailable, run_ocr_job
 from ..resources import resource_dir
-from ..selection import SelectionError, merge_selection
+from ..selection import SelectionError, display_words, merge_selection
 from ..style import detect_style
 from ..text_source import PageTextCache
 from .edit_popover import EditPopover
@@ -169,7 +170,7 @@ class MainWindow(QMainWindow):
     def _on_edits_changed(self) -> None:
         self._refresh_actions()
         if self.doc is not None:
-            self.view.update_pixmap(self._render(self.page_index))
+            self._refresh_page()
 
     # ---- opening ------------------------------------------------------------------
     def _choose_file(self) -> None:
@@ -269,7 +270,7 @@ class MainWindow(QMainWindow):
         pixmap = self._render(index)
         if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
             page_text = self.cache.get(index)
-            self.view.show_page(pixmap, page_text.words, self.scale)
+            self.view.show_page(pixmap, self._words(index), self.scale)
             self._set_status(self._status_for(page_text))
         else:
             self.view.show_page(pixmap, [], self.scale)
@@ -331,28 +332,51 @@ class MainWindow(QMainWindow):
         page_text = PageText(index, "scanned", result)
         self.cache.put(page_text)
         if index == self.page_index:
-            self.view.show_page(self._render(index), page_text.words, self.scale)
+            self.view.show_page(self._render(index), self._words(index), self.scale)
             self._set_status(self._status_for(page_text))
 
     # ---- making a fix -------------------------------------------------------------
+    def _page_edits(self, index: int) -> list[Edit]:
+        return [e for e in self.edits.items() if e.page_index == index]
+
+    def _words(self, index: int) -> list:
+        """Clickable words: the page's words, with each fixed spot shown as its fix."""
+        return display_words(self.cache.get(index).words, self._page_edits(index))
+
+    def _refresh_page(self) -> None:
+        """Redraw the current page and its clickable words after fixes change."""
+        index = self.page_index
+        if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
+            self.view.show_page(self._render(index), self._words(index), self.scale)
+        else:
+            self.view.update_pixmap(self._render(index))
+
     def _on_selection(self, words: list) -> None:
         if not words or self.doc is None:
             self._on_cancelled()
             return
-        try:
-            rect, old = merge_selection(words)
-        except SelectionError:
-            return
-        kind = self.cache.get(self.page_index).kind
-        style = detect_style(self.doc[self.page_index], rect, old, old, kind)
-        edit = Edit(self.page_index, rect, old, old, style, kind)
+        fixed = [w for w in words if w.line_id[0] == "edit"]
+        if fixed:
+            # Clicking a fixed word re-opens that fix; applying replaces it (no stacking).
+            earlier = self._page_edits(self.page_index)[fixed[0].line_id[1]]
+            edit = replace(earlier, replaces=earlier)
+            rect = edit.rect
+        else:
+            try:
+                rect, old = merge_selection(words)
+            except SelectionError:
+                return
+            kind = self.cache.get(self.page_index).kind
+            style = detect_style(self.doc[self.page_index], rect, old, old, kind)
+            edit = Edit(self.page_index, rect, old, old, style, kind)
         s = self.view.scale_factor
         scene_rect = QRectF(rect[0] * s, rect[1] * s, (rect[2] - rect[0]) * s, (rect[3] - rect[1]) * s)
         anchor = self.view.mapFromScene(scene_rect).boundingRect()
         self.popover.start(edit, anchor)
 
     def _on_preview(self, edit: Edit) -> None:
-        pix = render_with_edits(self.doc, self.page_index, self.edits.items() + [edit], self.scale)
+        others = [e for e in self.edits.items() if e is not edit.replaces]
+        pix = render_with_edits(self.doc, self.page_index, others + [edit], self.scale)
         self.view.update_pixmap(to_qpixmap(pix))
 
     def _on_applied(self, edit: Edit) -> None:
@@ -362,7 +386,7 @@ class MainWindow(QMainWindow):
     def _on_cancelled(self) -> None:
         self.popover.hide()
         if self.doc is not None:
-            self.view.update_pixmap(self._render(self.page_index))
+            self._refresh_page()
 
     # ---- edit history and saving --------------------------------------------------
     def undo(self) -> None:
