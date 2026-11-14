@@ -1,7 +1,17 @@
 import multiprocessing
+import sys
 
-from pdf_touchup.ui.app import main
+
+def _entry() -> None:
+    multiprocessing.freeze_support()
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
+        from pdf_touchup.selftest import run
+
+        sys.exit(run(sys.argv[2]))
+    from pdf_touchup.ui.app import main
+
+    main()
+
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    main()
+    _entry()
