@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-touchup"
+version = "0.1.0"
+description = "Free, offline small text fixes for normal and scanned PDFs"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.12"
+dependencies = ["pymupdf>=1.24", "numpy>=1.26", "pyside6>=6.7"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-qt", "pyinstaller>=6"]
+
+[project.gui-scripts]
+pdf-touchup = "pdf_touchup.ui.app:main"
+
+[tool.setuptools]
+packages = ["pdf_touchup", "pdf_touchup.ui"]
+
+[tool.setuptools.package-data]
+pdf_touchup = ["fonts/*", "ui/*.qss"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ocr: needs Tesseract"]
