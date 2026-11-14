@@ -396,3 +396,46 @@ def test_flash_survives_page_redraw(qtbot, window, native_pdf):
     window.view.flash_rect(QRectF(10, 10, 50, 20))
     window.go_to_page(0)  # redraw clears the scene, deleting the outline
     qtbot.wait(1100)  # the outline's removal timer fires here
+
+
+# ---- toasts and shortcuts --------------------------------------------------------------
+
+def test_toast_after_apply_and_after_panel_undo(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["March"], "April")
+    assert window.toast.isVisible() and window.toast.text() == "Fixed"
+    qtbot.mouseClick(window.fixes_panel.cards[0].undo_button, Qt.LeftButton)
+    assert window.toast.text() == "Fix removed"
+    qtbot.waitUntil(lambda: not window.toast.isVisible(), timeout=5000)
+
+
+def test_toast_after_save_has_open_folder(qtbot, window, native_pdf, tmp_path, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QFileDialog
+
+    out = tmp_path / "fixed.pdf"
+    opened = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["March"], "April")
+    window.save_action.trigger()
+    assert window.toast.text() == "Saved fixed.pdf"
+    assert window.toast.action_button.isVisibleTo(window.toast)
+    qtbot.mouseClick(window.toast.action_button, Qt.LeftButton)
+    from pathlib import Path
+
+    assert [Path(p) for p in opened] == [tmp_path]
+
+
+def test_shortcuts(window, native_pdf):
+    from PySide6.QtGui import QKeySequence
+
+    assert window.save_action.shortcut() == QKeySequence(QKeySequence.Save)
+    assert window.open_action.shortcut() == QKeySequence(QKeySequence.Open)
+    window.open_path(native_pdf)
+    window.zoom_in_action.trigger()
+    assert window.zoom_pct == 125
+    window.zoom_out_action.trigger()
+    window.zoom_out_action.trigger()
+    assert window.zoom_pct == 75

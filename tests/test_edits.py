@@ -456,3 +456,20 @@ def test_remove_after_replace_chain():
     assert edits.items() == []
     edits.undo()
     assert [e.new_text for e in edits.items()] == ["Boateng"]
+
+
+def _char_x(path, ch, y_range=(105, 125)):
+    page = pymupdf.open(path)[0]
+    return [round(c["bbox"][0], 1) for b in page.get_text("rawdict")["blocks"] for l in b.get("lines", [])
+            for sp in l["spans"] for c in sp["chars"] if y_range[0] < c["bbox"][1] < y_range[1] and c["c"] == ch]
+
+
+@pytest.mark.parametrize("fixture", ["native_pdf", "native_fullfont_pdf"])
+def test_mid_line_fix_keeps_the_rest_of_the_line_in_place(request, fixture, tmp_path):
+    """Removing a word in the middle of a line must not slide the following words left
+    (PyMuPDF 2.0/2.1 lose the first removed glyph's width; "2024" ended up under "April")."""
+    src = request.getfixturevalue(fixture)
+    out = tmp_path / "out.pdf"
+    save_as(src, [make_edit(src, old_words=("March",), new_text="April")], out)
+    assert _char_x(out, "4") == _char_x(src, "4")
+    assert "2024" in pymupdf.open(out)[0].get_text()

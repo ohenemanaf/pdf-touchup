@@ -9,7 +9,7 @@ description = "Free, offline small text fixes for normal and scanned PDFs"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = ["pymupdf>=1.24", "numpy>=1.26", "pyside6>=6.7"]
+dependencies = ["pymupdf>=1.26,<2.0", "numpy>=1.26", "pyside6>=6.7"]  # PyMuPDF 2.0/2.1 shift text after a mid-line removal
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-qt", "pyinstaller>=6"]

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox, QFrame, 
 from ..blend import width_scale
 from ..fonts import load_font, missing_glyphs
 from ..model import Edit
+from .toast import fade
 
 PREVIEW_DELAY_MS = 200
 ORIGINAL = "original"
@@ -110,8 +111,7 @@ class EditPopover(QFrame):
         self._validate()
         self.adjustSize()
         self._place(anchor)
-        self.show()
-        self.raise_()
+        fade(self, True)
         self.new_text.setFocus()
         self.new_text.selectAll()
 

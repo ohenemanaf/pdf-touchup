@@ -9,8 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QPushButton, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
@@ -23,6 +23,7 @@ from ..selection import SelectionError, display_words, merge_selection
 from ..style import detect_style
 from ..text_source import PageTextCache
 from .edit_popover import EditPopover
+from .toast import Toast
 from .fixes_panel import FixesPanel
 from .recent import RecentFiles
 from .start_page import StartPage, app_mark
@@ -124,6 +125,7 @@ class MainWindow(QMainWindow):
         self.view.viewport().setAcceptDrops(False)
 
         self.popover = EditPopover(self.view.viewport())
+        self.toast = Toast(self.view)
         self.view.selection_changed.connect(self._on_selection)
         self.popover.preview_requested.connect(self._on_preview)
         self.popover.applied.connect(self._on_applied)
@@ -311,6 +313,7 @@ class MainWindow(QMainWindow):
     def _remove_fix(self, edit: Edit) -> None:
         self.popover.hide()
         self.edits.remove(edit)
+        self.toast.show_message("Fix removed")
 
     def _fix_counts(self) -> dict[int, int]:
         counts: dict[int, int] = {}
@@ -583,6 +586,7 @@ class MainWindow(QMainWindow):
     def _on_applied(self, edit: Edit) -> None:
         self.view.clear_selection()
         self.edits.add(edit)
+        self.toast.show_message("Fixed")
 
     def _on_cancelled(self) -> None:
         self.popover.hide()
@@ -617,7 +621,8 @@ class MainWindow(QMainWindow):
             return
         self._saved_version = self.edits.version
         self._refresh_actions()
-        self.statusBar().showMessage(f"Saved {out.name}", 5000)
+        folder = QUrl.fromLocalFile(str(out.parent))
+        self.toast.show_message(f"Saved {out.name}", ("Open folder", lambda: QDesktopServices.openUrl(folder)))
 
     def _confirm_discard(self) -> bool:
         if not self.dirty:
