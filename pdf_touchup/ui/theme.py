@@ -69,7 +69,9 @@ QComboBox QAbstractItemView { background: $surface; border: 1px solid $border; s
 QWidget#recentPane { background: $surface_alt; border-right: 1px solid $border; }
 QLabel#sectionLabel { color: $text_muted; font-size: 12px; font-weight: 600; letter-spacing: 0.3px; }
 QListWidget#recent { background: transparent; border: none; outline: none; }
-QListWidget#recent::item { border-radius: 8px; padding: 6px 8px; margin-bottom: 2px; }
+QListWidget#recent::item { border-radius: 8px; padding: 2px; margin-bottom: 2px; }
+QLabel#recentName { font-size: 13px; }
+QListWidget#recent QLabel { background: transparent; }
 QListWidget#recent::item:hover { background: $hover; }
 QListWidget#recent::item:selected { background: $accent_soft; color: $accent; }
 QLabel#title { font-size: 22px; font-weight: 600; }

@@ -263,3 +263,61 @@ def test_refix_replaces_instead_of_stacking(qtbot, window, native_pdf):
     assert [i.word.text for i in window.view.word_items if i.word.line_id[0] == "edit"] == ["Kwame Boateng"]
     window.undo_action.trigger()
     assert [e.new_text for e in window.edits.items()] == ["Kwame Asante"]
+
+
+# ---- start screen, recent files, drag and drop ----------------------------------------
+from PySide6.QtCore import QMimeData, QPointF, QUrl  # noqa: E402
+from PySide6.QtGui import QDropEvent  # noqa: E402
+
+from pdf_touchup.ui.recent import RecentFiles  # noqa: E402
+
+
+def _drop(window, paths):
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.dropEvent(event)
+
+
+def test_starts_on_start_page(window):
+    assert window.stack.currentWidget() is window.start_page
+    assert window.start_page.recent.count() == 0
+    assert window.start_page.empty_recent.isVisibleTo(window.start_page)
+
+
+def test_open_records_recent_and_shows_editor(window, native_pdf, scanned_pdf):
+    window.open_path(native_pdf)
+    assert window.stack.currentWidget() is window.editor_page
+    first = RecentFiles(window.settings).items()[0]
+    assert first.path == native_pdf.resolve() and first.kind == "Typed"
+    assert "Typed" in window.file_meta.text() and "1 page" in window.file_meta.text()
+    window.open_path(scanned_pdf)
+    assert RecentFiles(window.settings).items()[0].kind == "Scanned"
+
+
+def test_recent_click_opens_file(window, native_pdf):
+    RecentFiles(window.settings).add(native_pdf, "Typed")
+    window.show_start()
+    assert window.start_page.recent.count() == 1
+    item = window.start_page.recent.item(0)
+    window.start_page.recent.itemClicked.emit(item)
+    assert window.doc is not None and window.path == native_pdf
+
+
+def test_drop_pdf_opens_it(window, native_pdf):
+    _drop(window, [native_pdf])
+    assert window.doc is not None
+    assert window.stack.currentWidget() is window.editor_page
+
+
+def test_drop_non_pdf_shows_message(window, tmp_path, native_pdf, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    note = tmp_path / "notes.txt"
+    note.write_text("hello")
+    _drop(window, [note])
+    _drop(window, [native_pdf, native_pdf])
+    assert window.doc is None
+    assert len(shown) == 2 and all("one PDF" in m for m in shown)
