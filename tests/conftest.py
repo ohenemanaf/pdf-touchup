@@ -10,7 +10,8 @@ import pytest
 FONTS = Path(__file__).resolve().parent.parent / "pdf_touchup" / "fonts"
 CREAM = (245, 240, 225)
 INK = (40, 40, 60)
-LINES = [((72, 100), "Name: Kwame Mensah"), ((72, 120), "Date: 12 March 2024")]
+LINES = [((72, 100), "Name: Kwame Mensah"), ((72, 120), "Date: 12 March 2024"),
+         ((72, 140), "Address: P. O. Box 294, Accra")]
 
 
 def make_native(path: Path, family: str = "Serif", subset: bool = True) -> Path:

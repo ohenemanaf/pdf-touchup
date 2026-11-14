@@ -9,6 +9,9 @@ FULL_PAGE_IMAGE = 0.8  # an image covering this share of the page makes it a sca
 # Visible text over a scan must cover at least this share of the page to count as a real
 # typed page; less than that is a watermark or stamp ("Scanned with CamScanner", page no.).
 MIN_VISIBLE_TEXT_SHARE = 0.03
+# A hidden text layer must hold at least this many words to be trusted instead of OCR.
+# Scanner apps often hide just their own name ("CamScanner") under the image.
+MIN_LAYER_WORDS = 10
 _VISIBLE_TEXT = ("fill-text", "stroke-text")
 _ANY_TEXT = _VISIBLE_TEXT + ("ignore-text",)
 
@@ -45,5 +48,5 @@ def page_kind(page: pymupdf.Page) -> str:
     visible = [pymupdf.Rect(b) for kind, b in log[image_at + 1:] if kind in _VISIBLE_TEXT]
     if sum(abs(r) for r in visible) >= MIN_VISIBLE_TEXT_SHARE * area:
         return "native"
-    hidden_layer = any(kind in _ANY_TEXT for kind, _ in log) and not visible
+    hidden_layer = not visible and len(page.get_text("words")) >= MIN_LAYER_WORDS
     return "searchable_scan" if hidden_layer else "scanned"

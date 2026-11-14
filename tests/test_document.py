@@ -44,3 +44,18 @@ def test_text_page_over_background_image_is_native(tmp_path, scanned_pdf):
     lines = [f"This is line number {i} of a real typed letter body text" for i in range(25)]
     page = _scan_with_visible_text(tmp_path / "bg.pdf", scanned_pdf, lines)
     assert page_kind(page) == "native"
+
+
+def test_scan_with_only_a_hidden_watermark_word_gets_ocr(tmp_path, native_pdf):
+    """CamScanner draws its name as text, then the scan image over it. That single word is not
+    a real text layer: the page must be OCR'd ("scanned"), or only "CamScanner" is selectable."""
+    from conftest import FONTS, scan_image
+
+    path = tmp_path / "camscanner.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((480, 830), "CamScanner", fontsize=8, fontname="F0",
+                     fontfile=str(FONTS / "LiberationSans-Regular.ttf"))
+    page.insert_image(pymupdf.Rect(18, 0, 577, 797), stream=scan_image(native_pdf).tobytes("png"))
+    doc.save(path)
+    assert page_kind(pymupdf.open(path)[0]) == "scanned"
