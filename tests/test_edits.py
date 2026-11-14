@@ -427,3 +427,32 @@ def test_stencil_mask_scan_falls_back_instead_of_crashing(native_pdf, tmp_path):
     out = tmp_path / "out.pdf"
     save_as(src, [edit], out)
     assert pymupdf.open(out)[0].get_pixmap(dpi=50).width > 0
+
+
+# ---- removing one fix (fixes panel "Undo") ----------------------------------------------
+
+def test_remove_is_undoable():
+    a = Edit(0, (0, 0, 10, 10), "Mensah", "Asante", None, "native")
+    b = Edit(0, (0, 20, 10, 30), "2023", "2024", None, "native")
+    edits = EditList()
+    edits.add(a)
+    edits.add(b)
+    v = edits.version
+    edits.remove(a)
+    assert edits.items() == [b] and edits.version > v
+    assert edits.undo() is a
+    assert edits.items() == [a, b]
+    edits.redo()
+    assert edits.items() == [b]
+
+
+def test_remove_after_replace_chain():
+    a = Edit(0, (0, 0, 10, 10), "Mensah", "Asante", None, "native")
+    b = dc_replace(a, new_text="Boateng", replaces=a)
+    edits = EditList()
+    edits.add(a)
+    edits.add(b)
+    edits.remove(b)  # removing the visible fix clears that spot entirely
+    assert edits.items() == []
+    edits.undo()
+    assert [e.new_text for e in edits.items()] == ["Boateng"]
