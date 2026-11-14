@@ -21,9 +21,12 @@ OCR_DESCENT = 0.21  # typical descender depth as a share of font size
 
 
 class EditList:
+    """Undoable history of fixes. Each step adds a fix or removes one (the fixes panel's Undo);
+    `items()` replays the history into the fixes that are currently active."""
+
     def __init__(self) -> None:
-        self._done: list[Edit] = []
-        self._undone: list[Edit] = []
+        self._done: list[tuple[str, Edit]] = []  # ("add" | "remove", edit)
+        self._undone: list[tuple[str, Edit]] = []
         self.on_change: Callable[[], None] | None = None
         self.version = 0  # bumps on every change; compare against a saved value to detect unsaved work
 
@@ -32,31 +35,49 @@ class EditList:
         if self.on_change:
             self.on_change()
 
-    def add(self, edit: Edit) -> None:
-        self._done.append(edit)
+    def _push(self, op: str, edit: Edit) -> None:
+        self._done.append((op, edit))
         self._undone.clear()
         self._changed()
+
+    def add(self, edit: Edit) -> None:
+        self._push("add", edit)
+
+    def remove(self, edit: Edit) -> None:
+        """Remove an active fix (and the earlier fixes it replaced: that spot is cleared)."""
+        self._push("remove", edit)
 
     def undo(self) -> Edit | None:
         if not self._done:
             return None
-        edit = self._done.pop()
-        self._undone.append(edit)
+        step = self._done.pop()
+        self._undone.append(step)
         self._changed()
-        return edit
+        return step[1]
 
     def redo(self) -> Edit | None:
         if not self._undone:
             return None
-        edit = self._undone.pop()
-        self._done.append(edit)
+        step = self._undone.pop()
+        self._done.append(step)
         self._changed()
-        return edit
+        return step[1]
 
     def items(self) -> list[Edit]:
-        """Active fixes, leaving out any fix that a later active fix replaces."""
-        replaced = {id(e.replaces) for e in self._done if e.replaces is not None}
-        return [e for e in self._done if id(e) not in replaced]
+        """Active fixes in order, leaving out removed fixes and fixes replaced by a later one."""
+        active: list[Edit] = []
+        for op, edit in self._done:
+            if op == "add":
+                active.append(edit)
+                continue
+            chain = set()
+            e: Edit | None = edit
+            while e is not None:
+                chain.add(id(e))
+                e = e.replaces
+            active = [a for a in active if id(a) not in chain]
+        replaced = {id(e.replaces) for e in active if e.replaces is not None}
+        return [e for e in active if id(e) not in replaced]
 
     @property
     def can_undo(self) -> bool:

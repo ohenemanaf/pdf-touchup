@@ -1,7 +1,8 @@
 """The page canvas: shows a rendered page and lets the user pick words on one line."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
+import shiboken6
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPen, QPixmap
 from PySide6.QtWidgets import (QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsView, QLabel)
@@ -87,6 +88,21 @@ class PageView(QGraphicsView):
         for item in self.scene().items():
             if isinstance(item, QGraphicsPixmapItem):
                 item.setPixmap(pixmap)
+
+    def flash_rect(self, rect: QRectF) -> None:
+        """Briefly outline a spot on the page (used when jumping to a fix)."""
+        item = QGraphicsRectItem(rect.adjusted(-3, -3, 3, 3))
+        item.setPen(QPen(OUTLINE, 2))
+        item.setBrush(QBrush(HOVER))
+        self.scene().addItem(item)
+
+        def remove() -> None:
+            if not shiboken6.isValid(item):
+                return  # the page was redrawn meanwhile and the outline already went with it
+            if item.scene() is not None:
+                item.scene().removeItem(item)
+
+        QTimer.singleShot(900, remove)
 
     def set_busy(self, text: str | None) -> None:
         if text:

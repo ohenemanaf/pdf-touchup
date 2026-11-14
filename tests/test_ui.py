@@ -263,3 +263,189 @@ def test_refix_replaces_instead_of_stacking(qtbot, window, native_pdf):
     assert [i.word.text for i in window.view.word_items if i.word.line_id[0] == "edit"] == ["Kwame Boateng"]
     window.undo_action.trigger()
     assert [e.new_text for e in window.edits.items()] == ["Kwame Asante"]
+
+
+# ---- start screen, recent files, drag and drop ----------------------------------------
+from PySide6.QtCore import QMimeData, QPointF, QUrl  # noqa: E402
+from PySide6.QtGui import QDropEvent  # noqa: E402
+
+from pdf_touchup.ui.recent import RecentFiles  # noqa: E402
+
+
+def _drop(window, paths):
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    event = QDropEvent(QPointF(10, 10), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    window.dropEvent(event)
+
+
+def test_starts_on_start_page(window):
+    assert window.stack.currentWidget() is window.start_page
+    assert window.start_page.recent.count() == 0
+    assert window.start_page.empty_recent.isVisibleTo(window.start_page)
+
+
+def test_open_records_recent_and_shows_editor(window, native_pdf, scanned_pdf):
+    window.open_path(native_pdf)
+    assert window.stack.currentWidget() is window.editor_page
+    first = RecentFiles(window.settings).items()[0]
+    assert first.path == native_pdf.resolve() and first.kind == "Typed"
+    assert "Typed" in window.file_meta.text() and "1 page" in window.file_meta.text()
+    window.open_path(scanned_pdf)
+    assert RecentFiles(window.settings).items()[0].kind == "Scanned"
+
+
+def test_recent_click_opens_file(window, native_pdf):
+    RecentFiles(window.settings).add(native_pdf, "Typed")
+    window.show_start()
+    assert window.start_page.recent.count() == 1
+    item = window.start_page.recent.item(0)
+    window.start_page.recent.itemClicked.emit(item)
+    assert window.doc is not None and window.path == native_pdf
+
+
+def test_drop_pdf_opens_it(window, native_pdf):
+    _drop(window, [native_pdf])
+    assert window.doc is not None
+    assert window.stack.currentWidget() is window.editor_page
+
+
+def test_drop_non_pdf_shows_message(window, tmp_path, native_pdf, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    note = tmp_path / "notes.txt"
+    note.write_text("hello")
+    _drop(window, [note])
+    _drop(window, [native_pdf, native_pdf])
+    assert window.doc is None
+    assert len(shown) == 2 and all("one PDF" in m for m in shown)
+
+
+# ---- fixes panel and thumbnail badges --------------------------------------------------
+
+def _apply_on(qtbot, window, words, new_text):
+    _click_word(qtbot, window.view, words[0])
+    for w in words[1:]:
+        _click_word(qtbot, window.view, w, Qt.ShiftModifier)
+    qtbot.waitUntil(lambda: window.popover.isVisible())
+    window.popover.new_text.setText(new_text)
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+
+
+def test_fixes_panel_lists_fixes(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    panel = window.fixes_panel
+    assert panel.cards == [] and panel.empty_state.isVisibleTo(panel)
+    _apply_on(qtbot, window, ["Kwame", "Mensah"], "Kwame Asante")
+    assert len(panel.cards) == 1
+    card = panel.cards[0]
+    assert card.old_label.text() == "Kwame Mensah" and card.new_label.text() == "Kwame Asante"
+    assert "Page 1" in card.meta_label.text()
+    assert not panel.empty_state.isVisibleTo(panel)
+    assert "1" in panel.heading.text()
+
+
+def test_panel_undo_removes_one_fix_and_ctrl_z_restores(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["Kwame", "Mensah"], "Kwame Asante")
+    _apply_on(qtbot, window, ["March"], "April")
+    assert len(window.fixes_panel.cards) == 2
+    first = next(c for c in window.fixes_panel.cards if c.edit.new_text == "Kwame Asante")
+    qtbot.mouseClick(first.undo_button, Qt.LeftButton)
+    assert [e.new_text for e in window.edits.items()] == ["April"]
+    assert len(window.fixes_panel.cards) == 1
+    window.undo_action.trigger()
+    assert sorted(e.new_text for e in window.edits.items()) == ["April", "Kwame Asante"]
+
+
+def _two_page_native(tmp_path):
+    import pymupdf
+    from conftest import FONTS
+
+    path = tmp_path / "two.pdf"
+    doc = pymupdf.open()
+    for text in ("First page text here", "Second page Mensah"):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), text, fontsize=11, fontname="F0",
+                         fontfile=str(FONTS / "LiberationSerif-Regular.ttf"))
+    doc.save(path)
+    return path
+
+
+def test_panel_click_jumps_to_page_and_thumbnail_badges(qtbot, window, tmp_path):
+    window.open_path(_two_page_native(tmp_path))
+    window.go_to_page(1)
+    _apply_on(qtbot, window, ["Mensah"], "Asante")
+    window.go_to_page(0)
+    card = window.fixes_panel.cards[0]
+    qtbot.mouseClick(card, Qt.LeftButton)
+    assert window.page_index == 1
+    qtbot.waitUntil(window.thumbnails_done)
+    assert window.thumb_badge(1) == 1 and window.thumb_badge(0) == 0
+    qtbot.mouseClick(card.undo_button, Qt.LeftButton)
+    assert window.thumb_badge(1) == 0
+
+
+def test_flash_survives_page_redraw(qtbot, window, native_pdf):
+    """Jumping to a fix outlines it briefly; a redraw in the meantime must not raise."""
+    from PySide6.QtCore import QRectF
+
+    window.open_path(native_pdf)
+    window.view.flash_rect(QRectF(10, 10, 50, 20))
+    window.go_to_page(0)  # redraw clears the scene, deleting the outline
+    qtbot.wait(1100)  # the outline's removal timer fires here
+
+
+# ---- toasts and shortcuts --------------------------------------------------------------
+
+def test_toast_after_apply_and_after_panel_undo(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["March"], "April")
+    assert window.toast.isVisible() and window.toast.text() == "Fixed"
+    qtbot.mouseClick(window.fixes_panel.cards[0].undo_button, Qt.LeftButton)
+    assert window.toast.text() == "Fix removed"
+    qtbot.waitUntil(lambda: not window.toast.isVisible(), timeout=5000)
+
+
+def test_toast_after_save_has_open_folder(qtbot, window, native_pdf, tmp_path, monkeypatch):
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QFileDialog
+
+    out = tmp_path / "fixed.pdf"
+    opened = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    window.open_path(native_pdf)
+    _apply_on(qtbot, window, ["March"], "April")
+    window.save_action.trigger()
+    assert window.toast.text() == "Saved fixed.pdf"
+    assert window.toast.action_button.isVisibleTo(window.toast)
+    qtbot.mouseClick(window.toast.action_button, Qt.LeftButton)
+    from pathlib import Path
+
+    assert [Path(p) for p in opened] == [tmp_path]
+
+
+def test_shortcuts(window, native_pdf):
+    from PySide6.QtGui import QKeySequence
+
+    assert window.save_action.shortcut() == QKeySequence(QKeySequence.Save)
+    assert window.open_action.shortcut() == QKeySequence(QKeySequence.Open)
+    window.open_path(native_pdf)
+    window.zoom_in_action.trigger()
+    assert window.zoom_pct == 125
+    window.zoom_out_action.trigger()
+    window.zoom_out_action.trigger()
+    assert window.zoom_pct == 75
+
+
+def test_header_buttons_follow_what_is_possible(qtbot, window, native_pdf):
+    window.open_path(native_pdf)
+    assert not window.save_button.isEnabled()
+    assert not window.undo_button.isEnabled() and not window.redo_button.isEnabled()
+    _apply_on(qtbot, window, ["March"], "April")
+    assert window.save_button.isEnabled() and window.undo_button.isEnabled()
+    window.undo_action.trigger()
+    assert window.redo_button.isEnabled() and not window.undo_button.isEnabled()

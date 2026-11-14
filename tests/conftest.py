@@ -103,3 +103,22 @@ def encrypted_pdf(tmp_path, native_pdf):
     pymupdf.open(native_pdf).save(out, encryption=pymupdf.PDF_ENCRYPT_AES_256,
                                   user_pw="secret", owner_pw="owner-secret")
     return out
+
+
+@pytest.fixture
+def settings(tmp_path):
+    """Isolated app settings (never the user's real recent files or theme)."""
+    from PySide6.QtCore import QSettings
+
+    return QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_app_settings(monkeypatch, tmp_path):
+    """No test may read or write the user's real settings (recent files, theme)."""
+    from PySide6.QtCore import QSettings
+
+    import pdf_touchup.ui.app as app_module
+
+    path = str(tmp_path / "app-settings.ini")
+    monkeypatch.setattr(app_module, "app_settings", lambda: QSettings(path, QSettings.IniFormat))

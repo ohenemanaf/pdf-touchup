@@ -10,10 +10,9 @@ a = Analysis(
     pathex=[str(ROOT)],
     datas=[
         (str(PKG / "fonts"), "pdf_touchup/fonts"),
-        (str(PKG / "ui" / "style.qss"), "pdf_touchup/ui"),
         (str(PKG / "tessdata"), "pdf_touchup/tessdata"),
     ],
-    hiddenimports=["pdf_touchup.ocr", "pdf_touchup.selftest"],
+    hiddenimports=["pdf_touchup.ocr", "pdf_touchup.selftest", "PySide6.QtSvg"],
     excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick",
               "PySide6.QtMultimedia", "PySide6.Qt3DCore", "PySide6.QtCharts"],
     noarchive=False,
