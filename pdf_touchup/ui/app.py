@@ -4,11 +4,12 @@ from __future__ import annotations
 import multiprocessing
 import sys
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import pymupdf
-from PySide6.QtCore import QObject, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QIcon, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import QObject, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QSizePolicy, QToolBar, QToolButton, QWidget)
@@ -28,6 +29,7 @@ APP_NAME = "PDF Touch-up"
 SCREEN_PX_PER_PT = 96 / 72
 ZOOM_MIN, ZOOM_MAX, ZOOM_STEP = 50, 300, 25
 THUMB_SCALE = 0.18
+THUMB_BATCH = 3  # thumbnails rendered per event-loop turn, so long files open instantly
 
 STATUS_NATIVE = "Normal page"
 STATUS_READING = "Reading page…"
@@ -54,7 +56,8 @@ class MainWindow(QMainWindow):
         self._pool: ProcessPoolExecutor | None = None
         self._bridge = _Bridge()
         self._bridge.ocr_done.connect(self._on_ocr_done)
-        self._pending: set[int] = set()
+        self._futures: dict[int, Future] = {}
+        self._crash_retried: set[int] = set()
         self._generation = 0
         self.doc: pymupdf.Document | None = None
         self.path: Path | None = None
@@ -62,9 +65,13 @@ class MainWindow(QMainWindow):
         self.cache: PageTextCache | None = None
         self.edits = EditList()
         self.edits.on_change = self._on_edits_changed
-        self._saved_count = 0
+        self._saved_version = 0
         self.page_index = 0
         self.zoom_pct = 100
+        self._thumb_next = 0
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setInterval(0)
+        self._thumb_timer.timeout.connect(self._render_thumb_batch)
 
         self.setWindowTitle(APP_NAME)
         self.view = PageView(self)
@@ -146,7 +153,7 @@ class MainWindow(QMainWindow):
 
     @property
     def dirty(self) -> bool:
-        return len(self.edits.items()) != self._saved_count
+        return self.edits.version != self._saved_version
 
     def _refresh_actions(self) -> None:
         has_doc = self.doc is not None
@@ -189,28 +196,48 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP_NAME, f"Couldn't open this file.\n\n{exc}")
                 return
         self._generation += 1
-        self._pending.clear()
+        self._cancel_ocr()
+        self._crash_retried.clear()
         self.doc, self.path, self.password = doc, path, password
         self.cache = PageTextCache(doc)
         self.edits = EditList()
         self.edits.on_change = self._on_edits_changed
-        self._saved_count = 0
+        self._saved_version = self.edits.version
         self.page_index = 0
         self._fill_thumbs()
         self.go_to_page(0)
         self._refresh_actions()
 
     def _fill_thumbs(self) -> None:
+        """Placeholders first; real thumbnails are drawn a few at a time so the window
+        never stalls on long scans."""
+        self._thumb_timer.stop()
         self.thumbs.blockSignals(True)
         self.thumbs.clear()
         for i, page in enumerate(self.doc):
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(THUMB_SCALE, THUMB_SCALE), alpha=False)
+            r = page.rect
+            blank = QPixmap(max(1, int(r.width * THUMB_SCALE)), max(1, int(r.height * THUMB_SCALE)))
+            blank.fill(QColor("#e9ecf0"))
+            self.thumbs.addItem(QListWidgetItem(QIcon(blank), str(i + 1)))
+        self.thumbs.setCurrentRow(0)
+        self.thumbs.blockSignals(False)
+        self._thumb_next = 0
+        self._thumb_timer.start()
+
+    def _render_thumb_batch(self) -> None:
+        end = min(self._thumb_next + THUMB_BATCH, self.doc.page_count if self.doc else 0)
+        for i in range(self._thumb_next, end):
+            pix = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(THUMB_SCALE, THUMB_SCALE), alpha=False)
             pm = to_qpixmap(pix)
             icon = QIcon(pm)
             icon.addPixmap(pm, QIcon.Selected)  # no blue tint over the selected page
-            self.thumbs.addItem(QListWidgetItem(icon, str(i + 1)))
-        self.thumbs.setCurrentRow(0)
-        self.thumbs.blockSignals(False)
+            self.thumbs.item(i).setIcon(icon)
+        self._thumb_next = end
+        if self.doc is None or end >= self.doc.page_count:
+            self._thumb_timer.stop()
+
+    def thumbnails_done(self) -> bool:
+        return self.doc is not None and self._thumb_next >= self.doc.page_count
 
     # ---- pages --------------------------------------------------------------------
     @property
@@ -238,6 +265,7 @@ class MainWindow(QMainWindow):
             self.thumbs.blockSignals(True)
             self.thumbs.setCurrentRow(index)
             self.thumbs.blockSignals(False)
+        self._cancel_ocr(keep=index)  # pages flicked past don't hold up this one
         pixmap = self._render(index)
         if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
             page_text = self.cache.get(index)
@@ -256,15 +284,17 @@ class MainWindow(QMainWindow):
 
     # ---- background OCR -----------------------------------------------------------
     def _start_ocr(self, index: int) -> None:
-        if index in self._pending:
+        if index in self._futures:
             return
         if self._pool is None:
             self._pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
-        self._pending.add(index)
         generation = self._generation
         future = self._pool.submit(run_ocr_job, str(self.path), self.password, index, self._ocr)
+        self._futures[index] = future
 
         def done(f: Future) -> None:
+            if f.cancelled():
+                return
             try:
                 result = f.result()
             except Exception as exc:  # handed to the GUI thread below
@@ -273,10 +303,24 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(done)
 
+    def _cancel_ocr(self, keep: int | None = None) -> None:
+        """Drop queued OCR jobs (a job already running finishes and is cached)."""
+        for index, future in list(self._futures.items()):
+            if index != keep and future.cancel():
+                del self._futures[index]
+
     def _on_ocr_done(self, generation: int, index: int, result) -> None:
         if generation != self._generation:
             return  # a different file has been opened since
-        self._pending.discard(index)
+        self._futures.pop(index, None)
+        if isinstance(result, BrokenProcessPool):
+            # The worker died (crash, out of memory). Start a fresh one; retry this page once.
+            self._pool = None
+            self._futures.clear()
+            if index == self.page_index and index not in self._crash_retried:
+                self._crash_retried.add(index)
+                self._start_ocr(index)
+                return
         if isinstance(result, Exception):
             if index == self.page_index:
                 self._set_status(STATUS_NO_OCR if isinstance(result, OcrUnavailable) else STATUS_NONE)
@@ -343,7 +387,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, f"Couldn't save the file.\n\n{exc}")
             return
-        self._saved_count = len(self.edits.items())
+        self._saved_version = self.edits.version
         self._refresh_actions()
         self.statusBar().showMessage(f"Saved {out.name}", 5000)
 

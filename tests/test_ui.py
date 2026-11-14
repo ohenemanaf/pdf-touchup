@@ -22,7 +22,7 @@ def window(qtbot):
     w.show()
     yield w
     # Closed here rather than by qtbot, so the "save first?" prompt can be skipped.
-    w._saved_count = len(w.edits.items())
+    w._saved_version = w.edits.version
     w.close()
 
 
@@ -175,3 +175,76 @@ def test_save_as_rejects_source_path(qtbot, window, native_pdf, monkeypatch):
     assert warnings and "original" in warnings[0].lower()
     assert native_pdf.read_bytes() == source_bytes
     assert "*" in window.windowTitle()
+
+
+# ---- final-review fixes -------------------------------------------------------------
+
+def _apply(qtbot, window, new_text):
+    _select_name(qtbot, window)
+    window.popover.new_text.setText(new_text)
+    qtbot.mouseClick(window.popover.apply_button, Qt.LeftButton)
+
+
+def test_dirty_after_undo_then_different_fix(qtbot, window, native_pdf, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "o.pdf"), ""))
+    window.open_path(native_pdf)
+    _apply(qtbot, window, "Kwame Asante")
+    window.save_action.trigger()
+    assert not window.dirty
+    window.undo_action.trigger()
+    _apply(qtbot, window, "Kwame Boateng")
+    assert window.dirty
+    assert "*" in window.windowTitle()
+
+
+def test_long_scan_opens_without_freezing(qtbot, tmp_path, native_pdf):
+    from conftest import make_scanned
+
+    long_scan = make_scanned(tmp_path / "long.pdf", native_pdf, pages=40)
+    w = MainWindow(ocr=slow_fake_ocr)
+    w.show()
+    try:
+        start = time.perf_counter()
+        w.open_path(long_scan)
+        assert time.perf_counter() - start < 1.0
+        assert w.thumbs.count() == 40
+        qtbot.waitUntil(lambda: w.thumbnails_done(), timeout=60000)
+    finally:
+        w._saved_version = w.edits.version
+        w.close()
+
+
+def test_skipped_pages_are_not_ocrd(qtbot, multipage_scan_pdf):
+    w = MainWindow(ocr=slow_fake_ocr)
+    w.show()
+    try:
+        w.open_path(multipage_scan_pdf)  # page 0 starts reading
+        for i in (1, 2, 3, 4):
+            w.go_to_page(i)
+        qtbot.waitUntil(lambda: w.page_status() == "Scanned page · text found", timeout=20000)
+        assert w.page_index == 4
+        assert not any(w.cache.has(i) for i in (1, 2, 3))
+    finally:
+        w.close()
+
+
+def crash_once_ocr(page):
+    """First call kills the worker process; later calls succeed."""
+    marker = os.environ["PDF_TOUCHUP_TEST_MARKER"]
+    if not os.path.exists(marker):
+        open(marker, "w").close()
+        os._exit(1)
+    return [Word("Kwame", (72, 90, 120, 101), (0, 0))]
+
+
+def test_ocr_recovers_after_worker_crash(qtbot, scanned_pdf, tmp_path, monkeypatch):
+    monkeypatch.setenv("PDF_TOUCHUP_TEST_MARKER", str(tmp_path / "crashed"))
+    w = MainWindow(ocr=crash_once_ocr)
+    w.show()
+    try:
+        w.open_path(scanned_pdf)
+        qtbot.waitUntil(lambda: w.page_status() == "Scanned page · text found", timeout=30000)
+    finally:
+        w.close()

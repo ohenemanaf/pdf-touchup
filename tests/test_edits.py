@@ -140,3 +140,45 @@ def test_apply_edits_in_place(native_pdf):
     doc = open_document(native_pdf)
     apply_edits(doc, [make_edit(native_pdf)])
     assert "Asante" in doc[0].get_text()
+
+
+# ---- final-review fixes -------------------------------------------------------------
+
+def test_save_with_reused_original_font(native_fullfont_pdf, tmp_path):
+    edit = make_edit(native_fullfont_pdf)
+    assert edit.style.font_buffer is not None
+    out = tmp_path / "out.pdf"
+    save_as(native_fullfont_pdf, [edit], out)
+    text = pymupdf.open(out)[0].get_text()
+    assert "Asante" in text and "Mensah" not in text
+
+
+def test_fix_keeps_tightly_spaced_neighbour_lines(tmp_path):
+    from conftest import FONTS
+
+    src = tmp_path / "tight.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    for i, line in enumerate(["Upper words here", "Name: Kwame Mensah", "Lower words here"]):
+        page.insert_text((72, 100 + 11 * i), line, fontsize=11, fontname="F0",
+                         fontfile=str(FONTS / "LiberationSerif-Regular.ttf"))
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    save_as(src, [make_edit(src)], out)
+    text = pymupdf.open(out)[0].get_text()
+    assert "Upper words here" in text
+    assert "Lower words here" in text
+    assert "Mensah" not in text and "Asante" in text
+
+
+def test_editlist_version_changes_on_every_change():
+    a, b = (Edit(0, (0, 0, 1, 1), "x", n, None, "native") for n in "ab")
+    edits = EditList()
+    seen = {edits.version}
+    edits.add(a)
+    seen.add(edits.version)
+    edits.undo()
+    seen.add(edits.version)
+    edits.add(b)
+    seen.add(edits.version)
+    assert len(seen) == 4  # same edit count as earlier, different version
