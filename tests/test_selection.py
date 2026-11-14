@@ -22,3 +22,15 @@ def test_merge_selection_rejects_two_lines():
 def test_merge_selection_rejects_empty():
     with pytest.raises(SelectionError):
         merge_selection([])
+
+
+def test_display_words_swaps_fixed_words():
+    from pdf_touchup.model import Edit
+    from pdf_touchup.selection import display_words
+
+    edit = Edit(0, (100, 90, 170, 101), "Kwame Mensah", "Kwame Asante", None, "native")
+    shown = display_words([KWAME, MENSAH, MARCH], [edit])
+    texts = [w.text for w in shown]
+    assert texts == ["March", "Kwame Asante"]
+    fixed = shown[-1]
+    assert fixed.rect == edit.rect and fixed.line_id == ("edit", 0)

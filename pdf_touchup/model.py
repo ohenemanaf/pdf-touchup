@@ -39,3 +39,5 @@ class Edit:
     new_text: str
     style: Style
     kind: str
+    # A re-fix of an earlier fix: while this edit is active, the earlier one is not applied.
+    replaces: "Edit | None" = field(default=None, repr=False, compare=False)

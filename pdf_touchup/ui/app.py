@@ -5,6 +5,7 @@ import multiprocessing
 import sys
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
@@ -19,7 +20,7 @@ from ..edits import EditList, default_output_path, render_with_edits, save_as
 from ..model import Edit, PageText
 from ..ocr import OcrUnavailable, run_ocr_job
 from ..resources import resource_dir
-from ..selection import SelectionError, merge_selection
+from ..selection import SelectionError, display_words, merge_selection
 from ..style import detect_style
 from ..text_source import PageTextCache
 from .edit_popover import EditPopover
@@ -56,8 +57,9 @@ class MainWindow(QMainWindow):
         self._pool: ProcessPoolExecutor | None = None
         self._bridge = _Bridge()
         self._bridge.ocr_done.connect(self._on_ocr_done)
-        self._futures: dict[int, Future] = {}
+        self._inflight: tuple[int, int] | None = None  # (generation, page) being read now
         self._crash_retried: set[int] = set()
+        self._ocr_failed: set[int] = set()
         self._generation = 0
         self.doc: pymupdf.Document | None = None
         self.path: Path | None = None
@@ -168,7 +170,7 @@ class MainWindow(QMainWindow):
     def _on_edits_changed(self) -> None:
         self._refresh_actions()
         if self.doc is not None:
-            self.view.update_pixmap(self._render(self.page_index))
+            self._refresh_page()
 
     # ---- opening ------------------------------------------------------------------
     def _choose_file(self) -> None:
@@ -196,8 +198,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP_NAME, f"Couldn't open this file.\n\n{exc}")
                 return
         self._generation += 1
-        self._cancel_ocr()
         self._crash_retried.clear()
+        self._ocr_failed.clear()
         self.doc, self.path, self.password = doc, path, password
         self.cache = PageTextCache(doc)
         self.edits = EditList()
@@ -265,11 +267,10 @@ class MainWindow(QMainWindow):
             self.thumbs.blockSignals(True)
             self.thumbs.setCurrentRow(index)
             self.thumbs.blockSignals(False)
-        self._cancel_ocr(keep=index)  # pages flicked past don't hold up this one
         pixmap = self._render(index)
         if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
             page_text = self.cache.get(index)
-            self.view.show_page(pixmap, page_text.words, self.scale)
+            self.view.show_page(pixmap, self._words(index), self.scale)
             self._set_status(self._status_for(page_text))
         else:
             self.view.show_page(pixmap, [], self.scale)
@@ -283,18 +284,18 @@ class MainWindow(QMainWindow):
         return STATUS_FOUND if page_text.words else STATUS_NONE
 
     # ---- background OCR -----------------------------------------------------------
+    # One page at a time: the worker process prefetches queued jobs, so queued jobs could not
+    # be cancelled reliably. Instead, when a job finishes, the page on screen *now* goes next.
     def _start_ocr(self, index: int) -> None:
-        if index in self._futures:
-            return
+        if self._inflight is not None:
+            return  # _ocr_next() picks up the current page when the worker is free
         if self._pool is None:
             self._pool = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
         generation = self._generation
+        self._inflight = (generation, index)
         future = self._pool.submit(run_ocr_job, str(self.path), self.password, index, self._ocr)
-        self._futures[index] = future
 
         def done(f: Future) -> None:
-            if f.cancelled():
-                return
             try:
                 result = f.result()
             except Exception as exc:  # handed to the GUI thread below
@@ -303,53 +304,81 @@ class MainWindow(QMainWindow):
 
         future.add_done_callback(done)
 
-    def _cancel_ocr(self, keep: int | None = None) -> None:
-        """Drop queued OCR jobs (a job already running finishes and is cached)."""
-        for index, future in list(self._futures.items()):
-            if index != keep and future.cancel():
-                del self._futures[index]
+    def _ocr_next(self) -> None:
+        index = self.page_index
+        if (self.doc is None or self._inflight is not None or self.cache.has(index)
+                or index in self._ocr_failed or page_kind(self.doc[index]) != "scanned"):
+            return
+        self._start_ocr(index)
 
     def _on_ocr_done(self, generation: int, index: int, result) -> None:
-        if generation != self._generation:
-            return  # a different file has been opened since
-        self._futures.pop(index, None)
+        self._inflight = None
+        if generation == self._generation:
+            self._handle_ocr_result(index, result)
+        self._ocr_next()
+
+    def _handle_ocr_result(self, index: int, result) -> None:
         if isinstance(result, BrokenProcessPool):
             # The worker died (crash, out of memory). Start a fresh one; retry this page once.
             self._pool = None
-            self._futures.clear()
-            if index == self.page_index and index not in self._crash_retried:
+            if index not in self._crash_retried:
                 self._crash_retried.add(index)
-                self._start_ocr(index)
                 return
         if isinstance(result, Exception):
+            self._ocr_failed.add(index)
             if index == self.page_index:
                 self._set_status(STATUS_NO_OCR if isinstance(result, OcrUnavailable) else STATUS_NONE)
             return
         page_text = PageText(index, "scanned", result)
         self.cache.put(page_text)
         if index == self.page_index:
-            self.view.show_page(self._render(index), page_text.words, self.scale)
+            self.view.show_page(self._render(index), self._words(index), self.scale)
             self._set_status(self._status_for(page_text))
 
     # ---- making a fix -------------------------------------------------------------
+    def _page_edits(self, index: int) -> list[Edit]:
+        return [e for e in self.edits.items() if e.page_index == index]
+
+    def _words(self, index: int) -> list:
+        """Clickable words: the page's words, with each fixed spot shown as its fix."""
+        return display_words(self.cache.get(index).words, self._page_edits(index))
+
+    def _refresh_page(self) -> None:
+        """Redraw the current page and its clickable words after fixes change."""
+        index = self.page_index
+        if self.cache.has(index) or page_kind(self.doc[index]) != "scanned":
+            self.view.show_page(self._render(index), self._words(index), self.scale)
+        else:
+            self.view.update_pixmap(self._render(index))
+
     def _on_selection(self, words: list) -> None:
         if not words or self.doc is None:
             self._on_cancelled()
             return
-        try:
-            rect, old = merge_selection(words)
-        except SelectionError:
-            return
-        kind = self.cache.get(self.page_index).kind
-        style = detect_style(self.doc[self.page_index], rect, old, old, kind)
-        edit = Edit(self.page_index, rect, old, old, style, kind)
+        fixed = [w for w in words if w.line_id[0] == "edit"]
+        if fixed:
+            # Clicking a fixed word re-opens that fix; applying replaces it (no stacking).
+            earlier = self._page_edits(self.page_index)[fixed[0].line_id[1]]
+            edit = replace(earlier, replaces=earlier)
+            rect = edit.rect
+        else:
+            try:
+                rect, old = merge_selection(words)
+            except SelectionError:
+                return
+            page_text = self.cache.get(self.page_index)
+            kind = page_text.kind
+            line = [w for w in page_text.words if w.line_id == words[0].line_id]
+            style = detect_style(self.doc[self.page_index], rect, old, old, kind, line_words=line)
+            edit = Edit(self.page_index, rect, old, old, style, kind)
         s = self.view.scale_factor
         scene_rect = QRectF(rect[0] * s, rect[1] * s, (rect[2] - rect[0]) * s, (rect[3] - rect[1]) * s)
         anchor = self.view.mapFromScene(scene_rect).boundingRect()
         self.popover.start(edit, anchor)
 
     def _on_preview(self, edit: Edit) -> None:
-        pix = render_with_edits(self.doc, self.page_index, self.edits.items() + [edit], self.scale)
+        others = [e for e in self.edits.items() if e is not edit.replaces]
+        pix = render_with_edits(self.doc, self.page_index, others + [edit], self.scale)
         self.view.update_pixmap(to_qpixmap(pix))
 
     def _on_applied(self, edit: Edit) -> None:
@@ -359,7 +388,7 @@ class MainWindow(QMainWindow):
     def _on_cancelled(self) -> None:
         self.popover.hide()
         if self.doc is not None:
-            self.view.update_pixmap(self._render(self.page_index))
+            self._refresh_page()
 
     # ---- edit history and saving --------------------------------------------------
     def undo(self) -> None:

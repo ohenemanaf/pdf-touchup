@@ -1,3 +1,4 @@
+import numpy as np
 import pymupdf
 import pytest
 
@@ -75,3 +76,52 @@ def test_searchable_scan_style_uses_text_layer_size(searchable_scan_pdf):
     assert _near(s.background, CREAM, 0.03)
     assert _near(s.color, INK, 0.08)
     assert s.font_buffer is None
+
+
+@pytest.mark.ocr
+@pytest.mark.parametrize("grow", [-0.5, 2.0])
+def test_scanned_size_survives_loose_ocr_box(scanned_pdf, grow):
+    """OCR boxes on real scans are often taller or shorter than the ink (one line gave 12.1 pt
+    and 15.7 pt for neighbouring words). The size must come from the ink, not the box height."""
+    from pdf_touchup.ocr import ocr_words
+
+    page = pymupdf.open(scanned_pdf)[0]
+    w = next(w for w in ocr_words(page) if w.text == "March")
+    x0, y0, x1, y1 = w.rect
+    loose = (x0, y0 - grow, x1, y1 + grow)
+    size = detect_style(page, loose, "March", "March", "scanned").size
+    assert abs(size - 11.0) <= 0.6, size
+
+
+@pytest.mark.ocr
+def test_scanned_size_fit_is_capped_when_ocr_text_misses_spaces(tmp_path):
+    """OCR often merges "7 / I ." into one word "7/1."; fitting that text to the wider ink must
+    not blow the size up (a reviewer probe got 15.6 pt for 11 pt text)."""
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_edits import _scan_of
+    from pdf_touchup.ocr import ocr_words
+
+    src = _scan_of(tmp_path, "merged", [((72, 100), "Date: 1 March 2024, Ref 7 / I . ill 11")])
+    page = pymupdf.open(src)[0]
+    sizes = {w.text: detect_style(page, w.rect, w.text, w.text, "scanned").size
+             for w in ocr_words(page) if 85 < w.rect[3] < 110}
+    assert all(11 * 0.85 - 0.6 <= v <= 11 * 1.15 + 0.6 for v in sizes.values()), sizes
+
+
+@pytest.mark.ocr
+def test_scanned_size_uses_the_whole_line(tmp_path):
+    """Words on one line share a size: a misread or oddly boxed word is outvoted by its line."""
+    import sys
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_edits import _scan_of
+    from pdf_touchup.ocr import ocr_words
+
+    src = _scan_of(tmp_path, "line", [((72, 100), "Date: 1 March 2024, Ref 7 / I . ill 11")])
+    page = pymupdf.open(src)[0]
+    line = [w for w in ocr_words(page) if 85 < w.rect[3] < 110]
+    merged = next(w for w in line if "/" in w.text)
+    size = detect_style(page, merged.rect, merged.text, merged.text, "scanned", line_words=line).size
+    assert abs(size - 11.0) <= 0.6, size

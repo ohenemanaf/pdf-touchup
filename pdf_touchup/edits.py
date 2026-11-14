@@ -11,6 +11,7 @@ import pymupdf
 from .document import open_document
 from .fonts import font_path, load_font
 from .model import Edit
+from .scan_pixels import apply_scan_edits
 
 SCAN_KINDS = ("scanned", "searchable_scan")
 PAD_X, PAD_Y = 0.5, 1.0  # points of extra erase around a scanned word, for anti-aliased ink edges
@@ -53,7 +54,9 @@ class EditList:
         return edit
 
     def items(self) -> list[Edit]:
-        return list(self._done)
+        """Active fixes, leaving out any fix that a later active fix replaces."""
+        replaced = {id(e.replaces) for e in self._done if e.replaces is not None}
+        return [e for e in self._done if id(e) not in replaced]
 
     @property
     def can_undo(self) -> bool:
@@ -93,7 +96,7 @@ def _insert(page: pymupdf.Page, edit: Edit, n: int) -> None:
                      color=style.color, rotate=page.rotation, morph=morph, **kwargs)
 
 
-def apply_edits(doc: pymupdf.Document, edits: list[Edit]) -> None:
+def apply_edits(doc: pymupdf.Document, edits: list[Edit], preview: bool = False) -> None:
     by_page: dict[int, list[Edit]] = defaultdict(list)
     for edit in edits:
         by_page[edit.page_index].append(edit)
@@ -110,8 +113,13 @@ def apply_edits(doc: pymupdf.Document, edits: list[Edit]) -> None:
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE,
                               graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                               text=pymupdf.PDF_REDACT_TEXT_REMOVE)
-        # Pass 2 (scans): paint the old word's pixels with the paper colour, touching no text.
+        # Pass 2 (scans): make the fix inside the scan picture itself.
         scans = [e for e in page_edits if e.kind in SCAN_KINDS]
+        if scans and apply_scan_edits(page, scans, preview):
+            for n, edit in enumerate(e for e in page_edits if e.kind not in SCAN_KINDS):
+                _insert(page, edit, n)
+            continue
+        # Fallback when there is no usable scan image: paint over it and draw text on top.
         for edit in scans:
             r = pymupdf.Rect(edit.rect)
             r = pymupdf.Rect(r.x0 - PAD_X, r.y0 - PAD_Y, r.x1 + PAD_X, r.y1 + PAD_Y)
@@ -143,5 +151,5 @@ def save_as(source: Path, edits: list[Edit], out: Path, password: str | None = N
 def render_with_edits(doc: pymupdf.Document, page_index: int, edits: list[Edit], zoom: float) -> pymupdf.Pixmap:
     tmp = pymupdf.open()
     tmp.insert_pdf(doc, from_page=page_index, to_page=page_index)
-    apply_edits(tmp, [replace(e, page_index=0) for e in edits if e.page_index == page_index])
+    apply_edits(tmp, [replace(e, page_index=0) for e in edits if e.page_index == page_index], preview=True)
     return tmp[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
